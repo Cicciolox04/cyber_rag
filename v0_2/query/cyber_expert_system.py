@@ -4,7 +4,7 @@ from langchain_chroma import Chroma
 
 class CyberThesisEngine:
     def __init__(self):
-        self.embeddings = OllamaEmbeddings(model="mistral", base_url="http://10.0.2.2:11434")
+        self.embeddings = OllamaEmbeddings(model="bge-m3", base_url="http://10.0.2.2:11434")
         self.db = Chroma(persist_directory="../chroma_db", embedding_function=self.embeddings)
         self.llm = ChatOllama(model="mistral", base_url="http://10.0.2.2:11434", temperature=0)
 
@@ -12,12 +12,15 @@ class CyberThesisEngine:
         with open(path, 'r') as f:
             return f.read()
 
-    def run_analysis(self, content, file_type="log/comando"):
-        # 1. Recupero dal database
-        docs = self.db.similarity_search(content, k=4)
+    def run_analysis(self, file_path):
+        # 1. Leggi il contenuto del file usando la funzione già definita
+        code_content = self.read_file(file_path)
+
+        # 2. Recupero dal database usando il contenuto
+        docs = self.db.similarity_search(code_content, k=4)
         context = "\n".join([d.page_content for d in docs])
 
-        # 2. Prompt Strutturato per la Tesi
+        # 3. Prompt Strutturato (Ho corretto il riferimento a code_content)
         prompt = f"""
         [RUOLO]
         Sei un Senior Security Auditor e un esperto di Cyber Kill Chain. 
@@ -34,7 +37,7 @@ class CyberThesisEngine:
         1. ANALISI CODICE: Cerca nel codice C funzioni pericolose (strcpy, gets, etc). 
         2. MATCHING: Trova tra i dati del contesto la CWE che descrive esattamente l'errore nel codice.
         3. MAPPATURA: Collega la CWE alla fase della Cyber Kill Chain (es. Exploitation).
-        4. PREDIZIONE: Se un attaccante sfrutta questa specifica CWE, quale sarà la mossa SUCCESSIVA? (es. Se c'è un overflow, cercherà di iniettare uno shellcode per una Reverse Shell).
+        4. PREDIZIONE: Se un attaccante sfrutta questa specifica CWE, quale sarà la mossa SUCCESSIVA?
 
         [FORMATO OUTPUT JSON]
         Rispondi ESCLUSIVAMENTE con un JSON strutturato così:

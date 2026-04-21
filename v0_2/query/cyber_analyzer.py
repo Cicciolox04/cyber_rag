@@ -3,41 +3,50 @@ from langchain_chroma import Chroma
 
 # Configurazione
 URL_OLLAMA = "http://10.0.2.2:11434"
-embeddings = OllamaEmbeddings(model="mistral", base_url=URL_OLLAMA)
+embeddings = OllamaEmbeddings(model="bge-m3", base_url=URL_OLLAMA)
 db = Chroma(persist_directory="../chroma_db", embedding_function=embeddings)
-llm = ChatOllama(model="mistral", base_url=URL_OLLAMA, temperature=0.1) # Temperatura bassa = più precisione
+llm = ChatOllama(model="mistral", base_url=URL_OLLAMA, temperature=0.1)
 
 def analyze_and_predict(input_data):
-    # 1. RETRIEVAL: Trova i pattern più simili
-    print(f"🔍 Analizzando l'input...")
-    docs = db.similarity_search(input_data, k=3)
+    print(f"🔍 Analizzando l'input sospetto...")
     
-    context = ""
+    # Recuperiamo 4 documenti invece di 3 per avere un contesto più ampio (opzionale)
+    docs = db.similarity_search(input_data, k=4)
+    
+    context_list = []
     for d in docs:
-        context += f"\n---\nTecnica: {d.metadata['name']}\nFasi: {d.metadata['phases']}\nDescrizione: {d.page_content}\n"
+        # Recupero sicuro dei metadati
+        name = d.metadata.get('name', 'Sconosciuto')
+        phases = d.metadata.get('phases', 'N/A')
+        item_id = d.metadata.get('id', 'N/A')
+        
+        info = f"[ID: {item_id}] Tecnica: {name} | Fasi: {phases}\nDescrizione: {d.page_content}"
+        context_list.append(info)
 
-    # 2. PROMPT ENGINEERING: Definiamo il ragionamento
+    context = "\n---\n".join(context_list)
+
     prompt = f"""
-    Sei un esperto di Cyber Threat Intelligence. Analizza il seguente input sospetto:
+    Sei un esperto di Cyber Threat Intelligence (CTI). Il tuo compito è analizzare il seguente input e mappare il comportamento:
+    
+    INPUT DA ANALIZZARE:
     '{input_data}'
 
-    Utilizza questi pattern reali dal MITRE ATT&CK come contesto:
+    CONTESTO DA BASE DI CONOSCENZA (MITRE/CWE):
     {context}
 
-    Segui rigorosamente questo schema di risposta:
-    1. IDENTIFICAZIONE: Quale tecnica MITRE è più probabile? In quale fase della Cyber Kill Chain siamo?
-    2. RAGIONAMENTO: Perché questo input è pericoloso?
-    3. PREDIZIONE: Data la fase attuale, quale sarà la PROSSIMA mossa logica dell'attaccante nella Cyber Kill Chain? 
-    4. MITIGAZIONE: Cosa dovrebbe fare subito un sistemista per bloccare questa progressione?
+    ISTRUZIONI:
+    Analizza l'input e, basandoti sul contesto fornito, rispondi seguendo questo schema:
+    1. IDENTIFICAZIONE: Quale tecnica o vulnerabilità è più probabile? Specifica l'ID (T o CWE).
+    2. RAGIONAMENTO: Spiega brevemente perché l'input corrisponde a questo pattern.
+    3. PREDIZIONE: Se l'attaccante ha successo con questa mossa ({input_data}), quale sarà il suo prossimo passo logico nella catena d'attacco?
+    4. MITIGAZIONE: Fornisci una raccomandazione tecnica immediata.
     """
 
-    print("🤖 Mistral sta elaborando la predizione...\n")
+    print("🤖 Elaborazione analisi predittiva in corso...\n")
     response = llm.invoke(prompt)
     return response.content
 
-# --- TEST REALE ---
-test_input = "powershell -enc JABzAD0ATgBlAHcALQBPAGIAagBlAGMAdAAgAEkATwAuAE0AZQBtAG8AcgB5AFMAdAByAGUAYQBtACgAWwBDAG8AbgB2AGUAcgB0AF0AOgA6AEYAcgBvAG0AQgBhAHMAZQA2ADQAUwB0AHIAaQBuAGcAKAAiAEgA..." 
-# (Esempio di comando PowerShell codificato in Base64)
-
+# Esempio di esecuzione
+test_input = "Il server web crasha quando invio una stringa di 5000 caratteri nel campo della testata HTTP User-Agent"
 report = analyze_and_predict(test_input)
 print(report)

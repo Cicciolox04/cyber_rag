@@ -2,8 +2,8 @@ from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_chroma import Chroma
 
 class CyberThesisEngineV3:
-    def __init__(self, threshold=0.6):
-        self.embeddings = OllamaEmbeddings(model="mistral", base_url="http://10.0.2.2:11434")
+    def __init__(self, threshold=0.8):
+        self.embeddings = OllamaEmbeddings(model="bge-m3", base_url="http://10.0.2.2:11434")
         self.db = Chroma(persist_directory="../chroma_db", embedding_function=self.embeddings)
         self.llm = ChatOllama(model="mistral", base_url="http://10.0.2.2:11434", temperature=0)
         self.threshold = threshold # Soglia di accettazione
