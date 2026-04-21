@@ -24,7 +24,7 @@ store = ReportStore(str(HISTORY_FILE))
 
 def _page(title: str, body: str) -> HTMLResponse:
     safe_title = html.escape(title)
-    html = f"""
+    html_content = f"""
     <html><head><meta charset='utf-8'><title>{safe_title}</title></head>
     <body style='font-family: Arial, sans-serif; margin: 24px;'>
       <h1>{safe_title}</h1>
@@ -32,7 +32,7 @@ def _page(title: str, body: str) -> HTMLResponse:
       {body}
     </body></html>
     """
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html_content)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -79,12 +79,12 @@ async def analyze_files(
         try:
             uploaded = await ingestion.ingest_upload(uf)
             result = engine.analyze(uploaded, mode=mode, context=context, priority=priority)
-        except FileIngestionError as exc:
+        except FileIngestionError:
             result = {
                 "analysis_id": "N/A",
                 "original_filename": uf.filename,
                 "status": "failed",
-                "error": str(exc),
+                "error": "File non valido, non supportato o non analizzabile.",
             }
         except Exception:
             result = {

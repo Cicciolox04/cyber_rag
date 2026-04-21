@@ -8,11 +8,9 @@ from uuid import uuid4
 from v0_2.models.schemas import UploadedInput
 
 MAX_UPLOAD_SIZE_BYTES = 2 * 1024 * 1024
-SUPPORTED_EXTENSIONS = {
-    ".py", ".c", ".cpp", ".cc", ".h", ".hpp", ".java", ".js", ".ts", ".go", ".rs", ".php", ".cs",
-    ".txt", ".md", ".log", ".json", ".yaml", ".yml", ".csv", ".xml",
-}
 CODE_EXTENSIONS = {".py", ".c", ".cpp", ".cc", ".h", ".hpp", ".java", ".js", ".ts", ".go", ".rs", ".php", ".cs"}
+TEXT_EXTENSIONS = {".txt", ".md", ".log", ".json", ".yaml", ".yml", ".csv", ".xml"}
+SUPPORTED_EXTENSIONS = CODE_EXTENSIONS | TEXT_EXTENSIONS
 
 
 class FileIngestionError(Exception):
@@ -34,9 +32,9 @@ class FileIngestionService:
     def _detect_type(extension: str) -> str:
         if extension in CODE_EXTENSIONS:
             return "code"
-        if extension in {".log"}:
+        if extension == ".log":
             return "log"
-        if extension in {".txt", ".md", ".json", ".yaml", ".yml", ".csv", ".xml"}:
+        if extension in TEXT_EXTENSIONS:
             return "report"
         return "other"
 

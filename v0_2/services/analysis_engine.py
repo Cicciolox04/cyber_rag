@@ -17,7 +17,13 @@ class AnalysisEngineError(Exception):
 
 
 class UnifiedAnalysisEngine:
-    def __init__(self, db_dir: str, ollama_url: str = "http://10.0.2.2:11434", embedding_model: str = "bge-m3", llm_model: str = "mistral"):
+    def __init__(
+        self,
+        db_dir: str,
+        ollama_url: str = "http://10.0.2.2:11434",
+        embedding_model: str = "bge-m3",
+        llm_model: str = "mistral",
+    ):
         self.db_dir = db_dir
         self.ollama_url = ollama_url
         self.embedding_model = embedding_model
@@ -135,7 +141,7 @@ Rispondi SOLO in JSON valido con questa struttura:
                 raw_conclusion=payload.get("raw_conclusion", response),
                 evidence=evidence,
             )
-        except Exception as exc:
+        except Exception:
             return AnalysisResult(
                 analysis_id=uuid4().hex,
                 original_filename=uploaded.original_filename,
@@ -145,8 +151,8 @@ Rispondi SOLO in JSON valido con questa struttura:
                 context=context,
                 priority=priority,
                 status="failed",
-                error=f"Errore durante l'analisi: {exc}",
+                error="Errore durante l'analisi del modello.",
                 executive_summary="Analisi non completata.",
-                raw_conclusion="Il modello non ha restituito un output JSON valido.",
+                raw_conclusion="Output del modello non valido o non disponibile.",
                 evidence=evidence,
             )
