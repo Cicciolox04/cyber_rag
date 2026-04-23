@@ -1,0 +1,4 @@
+timestamp,event,source_ip,bytes_sent
+2024-12-01 10:00:01,Login,10.0.0.5,500
+2024-12-01 23:55:00,InternalQuery,10.0.0.5,1024000
+2024-12-01 23:58:12,LogDeletion,127.0.0.1,0

@@ -1,0 +1,5 @@
+{
+  "update_url": "http://repo.external-service.io/v3/updates",
+  "allow_unverified_certs": true,
+  "admin_access": "enabled"
+}
