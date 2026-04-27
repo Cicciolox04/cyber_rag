@@ -65,7 +65,7 @@ class CyberPredictiveIntegrator:
 if __name__ == "__main__":
     predictor = CyberPredictiveIntegrator()
     # Esegui il test su un file di audit specifico
-    result = predictor.analyze_security_report("../audit_sicurezza.pdf")
+    result = predictor.analyze_security_report("../testing/audit_sicurezza.pdf")
     print("\n" + "="*50)
     print("🛡️ REPORT DI PREDIZIONE MINACCE")
     print("="*50)

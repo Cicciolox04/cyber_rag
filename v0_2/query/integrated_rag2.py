@@ -98,6 +98,7 @@ class CyberPredictiveIntegrator:
         1. RICONOSCIMENTO PATTERN: Collega le falle tra i diversi file (es. config -> codice -> log).
         2. SCENARIO PREVISTO: Descrivi la Kill Chain completa (Supply Chain Attack, Lateral Movement).
         3. PRIORITÀ DI INTERVENTO: Qual è l'anello più debole della catena?
+        4. FORNISCI UNA MITIGAZIONE TECNICA: basati sulle CWE presenti nel database per forinre una mitigazione, se non la trovi NON INVENTARE.
         """
         
         analysis = self.llm.invoke(prompt).content
@@ -107,7 +108,7 @@ class CyberPredictiveIntegrator:
 
 if __name__ == "__main__":
     predictor = CyberPredictiveIntegrator()
-    report_text, score, level = predictor.analyze_security_report("../final_stress_test")
+    report_text, score, level = predictor.analyze_security_report("../testing/vulnerable/vulnerable.c")
     
     print("\n" + "="*50)
     print(f"🛡️ ANALISI COMPLETATA - LIVELLO DI RISCHIO: {level}")
