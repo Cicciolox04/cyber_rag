@@ -1,0 +1,16 @@
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+[remote "origin"]
+	url = https://github.com/Cicciobello04/cyber_rag.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "main"]
+	remote = origin
+	merge = refs/heads/main
+	vscode-merge-base = origin/main
+[branch "copilot/understand-codebase-structure"]
+	remote = origin
+	merge = refs/heads/copilot/understand-codebase-structure
+	vscode-merge-base = origin/copilot/understand-codebase-structure
