@@ -1,93 +1,132 @@
-import os, json
+import os
+from PyPDF2 import PdfReader
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings, ChatOllama
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.output_parsers import JsonOutputParser
 
-# --- 1. CONFIGURAZIONE SISTEMA ---
-DB_DIR = '../chroma_db'
-embeddings = OllamaEmbeddings(model="bge-m3", base_url="http://10.0.2.2:11434")
-vector_db = Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
+class CyberPredictiveIntegrator:
+    def __init__(self, db_dir="../chroma_db", threshold=0.85): # Soglia leggermente più permissiva per i CAPEC
+        self.url = "http://10.0.2.2:11434"
+        self.embeddings = OllamaEmbeddings(model="bge-m3", base_url=self.url)
+        self.db = Chroma(persist_directory=db_dir, embedding_function=self.embeddings)
+        self.llm = ChatOllama(model="mistral", base_url=self.url, temperature=0.1)
+        self.threshold = threshold
 
-# Mistral configurato per massimizzare il grounding deterministico
-llm = ChatOllama(model="mistral", base_url="http://10.0.2.2:11434", temperature=0.0, format="json")
+    def _calculate_risk_score(self, rag_evidence, ll_analysis):
+        score = 0
+        evidences = [e for e in rag_evidence.split('\n\n') if e.strip()]
+        score += min(len(evidences) * 10, 30) 
 
-# --- 2. PROMPT DI ESTRAZIONE RIGIDA ---
-extraction_template = """Sei un estrattore di dati JSON per la cybersecurity. 
-Analizza l'INPUT e usa SOLO i documenti nelle sezioni SOURCE per la mappatura.
+        severity_map = {
+            "RCE": 40, "Remote Code Execution": 40, "Command Injection": 40,
+            "Supply Chain": 30, "Lateral Movement": 25,
+            "Hardcoded": 20, "Plaintext": 20,
+            "Unverified": 15, "HTTP": 10
+        }
+        
+        for term, weight in severity_map.items():
+            if term.lower() in ll_analysis.lower() or term.lower() in rag_evidence.lower():
+                score += weight
+        
+        if "connessione tra i file" in ll_analysis.lower() or "catena" in ll_analysis.lower():
+            score += 15
 
-REGOLE TASSATIVE:
-1. CAPEC ID: Cerca solo in 'SOURCE CAPEC_PATTERN'.
-2. CWE ID: Cerca solo in 'SOURCE CWE_WEAKNESS'.
-3. MITRE ID: Cerca solo in 'SOURCE MITRE_TECHNIQUE'.
-4. Se un ID non è presente nel contesto, scrivi "NOT_FOUND".
-5. Non usare la tua memoria per inventare ID. Copia letteralmente dal contesto.
+        final_score = min(score, 100)
+        level = "CRITICO 🔴" if final_score >= 85 else "ALTO 🟠" if final_score >= 60 else "MEDIO 🟡" if final_score >= 30 else "BASSO 🟢"
+        
+        return final_score, level
 
-CONTESTO:
-{context}
+    def _smart_retrieval(self, query):
+        """
+        Recupero bilanciato: interroga separatamente le categorie per non 'oscurare' i CAPEC.
+        """
+        # Interrogazioni mirate per categoria
+        m = self.db.similarity_search_with_score(query, k=3, filter={"type": "mitre_technique"})
+        c = self.db.similarity_search_with_score(query, k=3, filter={"type": "cwe_weakness"})
+        ca = self.db.similarity_search_with_score(query, k=4, filter={"type": "capec_pattern"})
+        
+        all_results = m + c + ca
+        valid_context = []
+        found_ids = []
 
-INPUT: 
-{question}
+        for doc, score in all_results:
+            if score <= self.threshold:
+                type_label = doc.metadata.get('type', 'N/A').upper()
+                id_label = doc.metadata.get('id', 'N/A')
+                
+                if id_label != 'N/A':
+                    found_ids.append(f"{type_label}: {id_label}")
+                
+                valid_context.append(f"[{type_label}] {id_label}: {doc.page_content}")
+        
+        return "\n\n".join(valid_context), list(set(found_ids))
 
-RISPOSTA JSON:
-{{
-  "analisi_tecnica": "...",
-  "capec": {{"id": "...", "nome": "..."}},
-  "cwe": {{"id": "...", "nome": "..."}},
-  "mitre": {{"id": "...", "nome": "..."}}
-}}"""
-extraction_prompt = ChatPromptTemplate.from_template(extraction_template)
+    def analyze_security_report(self, path):
+        print(f"🔍 Analisi in corso su: {path}")
+        content = ""
 
-# --- 3. LOGICA DI ANALISI E LETTURA ---
+        if os.path.isdir(path):
+            for root, _, files in os.walk(path):
+                for file in files:
+                    if file.endswith(('.py', '.json', '.txt', '.log', '.md', '.c', '.h')):
+                        try:
+                            with open(os.path.join(root, file), 'r', encoding='utf-8', errors='ignore') as f:
+                                content += f"\n--- NOME FILE: {file} ---\n{f.read()}\n"
+                        except: pass
+        elif path.endswith('.pdf'):
+            reader = PdfReader(path)
+            content = "\n".join([p.extract_text() for p in reader.pages])
+        else:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
 
-def run_cyber_analysis(target_input):
-    """
-    Riconosce se l'input è un file o testo diretto e avvia la pipeline RAG.
-    """
-    content = target_input
-    
-    # Logica di lettura file
-    if os.path.isfile(target_input):
-        print(f"📂 Rilevato percorso file: {target_input}. Lettura contenuto...")
-        with open(target_input, 'r', encoding='utf-8') as f:
-            content = f.read()
-    else:
-        print(f"✍️ Analisi testo diretto rilevata.")
+        if not content:
+            return "Nessun dato trovato.", 0, "N/A", []
 
-    print(f"🚀 Elaborazione di {len(content)} caratteri...")
-    
-    # FASE 1: HyDE (Espansione Semantica)
-    print("🧠 FASE 1: HyDE - Generazione descrizione tecnica intermedia...")
-    hyde_desc = llm.invoke(f"Descrivi tecnicamente questa minaccia: {content}").content
+        # FASE 1: Generazione descrizione tecnica intermedia (HyDE) per attivare i CAPEC
+        hyde_prompt = f"Analizza e descrivi la vulnerabilità, il pattern d'attacco e l'obiettivo tattico di: {content[:2000]}"
+        hyde_desc = self.llm.invoke(hyde_prompt).content
 
-    # FASE 2: FILTERED RETRIEVAL (Bilanciamento Metadati)
-    print("🔍 FASE 2: RETRIEVAL - Recupero documenti mirati dal database...")
-    docs_mitre = vector_db.similarity_search(hyde_desc, k=3, filter={"type": "mitre_technique"})
-    docs_cwe = vector_db.similarity_search(hyde_desc, k=3, filter={"type": "cwe_weakness"})
-    docs_capec = vector_db.similarity_search(hyde_desc, k=3, filter={"type": "capec_pattern"})
-    
-    context_parts = []
-    for d in docs_mitre: context_parts.append(f"[SOURCE MITRE] ID: {d.metadata.get('id')}\n{d.page_content}")
-    for d in docs_cwe: context_parts.append(f"[SOURCE CWE] ID: {d.metadata.get('id')}\n{d.page_content}")
-    for d in docs_capec: context_parts.append(f"[SOURCE CAPEC] ID: {d.metadata.get('id')}\n{d.page_content}")
-    
-    # FASE 3: EXTRACTION & MAPPING JSON
-    print("🔬 FASE 3: EXTRACTION - Mappatura deterministica in corso...")
-    chain = (
-        {"context": lambda x: "\n\n".join(context_parts), "question": RunnablePassthrough()}
-        | extraction_prompt
-        | llm
-        | JsonOutputParser()
-    )
-    
-    result = chain.invoke(content)
-    print("\n" + "="*55 + "\n✅ REPORT ANALISI VALIDATO\n" + "="*55)
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+        # FASE 2: Retrieval bilanciato usando la descrizione HyDE
+        rag_evidence, ids_list = self._smart_retrieval(hyde_desc)
+        
+        prompt = f"""
+        [RUOLO: Senior Cyber Threat Intelligence Analyst]
+        [ISTRUZIONI: Rispondi SEMPRE in ITALIANO]
+        
+        CONTESTO RILEVATO:
+        {content[:5000]}
+        
+        EVIDENZE RAG (CWE/MITRE/CAPEC):
+        {rag_evidence}
+        
+        COMPITO:
+        1. RICONOSCIMENTO PATTERN: Collega le falle tra i diversi file.
+        2. SCENARIO PREVISTO: Descrivi la Kill Chain completa.
+        3. LISTA IDENTIFICATIVI: Cita e spiega esplicitamente ogni CWE, MITRE e CAPEC trovato nel database.
+        4. MITIGAZIONE: Fornisci una mitigazione tecnica basata sulle CWE trovate.
+        """
+        
+        analysis = self.llm.invoke(prompt).content
+        numeric_score, risk_level = self._calculate_risk_score(rag_evidence, analysis)
+        
+        return analysis, numeric_score, risk_level, ids_list
 
 if __name__ == "__main__":
-    # Puoi passare una stringa o un percorso file (es. "vulnerable.c" o "attack.log")
-    input_test = "Un utente ha tentato di scalare i privilegi eseguendo un exploit locale basato su un errore di configurazione dei permessi SUID su un binario di sistema."
-    # input_test = "../testing/vulnerable/vulnerable.c"
+    predictor = CyberPredictiveIntegrator()
+    # Eseguiamo l'analisi sulla cartella test_repo
+    report_text, score, level, found_ids = predictor.analyze_security_report("../testing/vulnerable/hardcoded_creds.py")
     
-    run_cyber_analysis(input_test)
+    print("\n" + "="*50)
+    print(f"🛡️ LIVELLO DI RISCHIO: {level} ({score}/100)")
+    print("="*50)
+    
+    print("\n📚 RIFERIMENTI TROVATI NEL DATABASE (Mappatura Standard):")
+    if found_ids:
+        for ref_id in sorted(found_ids):
+            print(f"  • {ref_id}")
+    else:
+        print("  • Nessun riferimento specifico trovato.")
+
+    print("\n📝 ANALISI DETTAGLIATA:")
+    print("-" * 50)
+    print(report_text)
