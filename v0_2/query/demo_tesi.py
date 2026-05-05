@@ -1,25 +1,36 @@
 import os
+import json
 from PyPDF2 import PdfReader
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 
 class CyberPredictiveIntegrator:
-    def __init__(self, db_dir="../chroma_db", threshold=0.85): # Soglia leggermente più permissiva per i CAPEC
+    def __init__(self, db_dir="../chroma_db", threshold=0.8, map_path="../data/opencre_map.json"):
+        """Inizializza il sistema RAG con supporto OpenCRE per la conformità."""
         self.url = "http://10.0.2.2:11434"
         self.embeddings = OllamaEmbeddings(model="bge-m3", base_url=self.url)
         self.db = Chroma(persist_directory=db_dir, embedding_function=self.embeddings)
         self.llm = ChatOllama(model="mistral", base_url=self.url, temperature=0.1)
         self.threshold = threshold
+        
+        # Caricamento Mappa OpenCRE (Knowledge Graph deterministico)
+        if os.path.exists(map_path):
+            with open(map_path, "r", encoding="utf-8") as f:
+                self.opencre_data = json.load(f)
+            print(f"✅ Mappa OpenCRE caricata correttamente ({len(self.opencre_data)} collegamenti)")
+        else:
+            self.opencre_data = {}
+            print(f"⚠️ Attenzione: File {map_path} non trovato. La conformità sarà disabilitata.")
 
     def _calculate_risk_score(self, rag_evidence, ll_analysis):
+        """Calcola uno score numerico basato sulle evidenze trovate."""
         score = 0
         evidences = [e for e in rag_evidence.split('\n\n') if e.strip()]
         score += min(len(evidences) * 10, 30) 
 
         severity_map = {
             "RCE": 40, "Remote Code Execution": 40, "Command Injection": 40,
-            "Supply Chain": 30, "Lateral Movement": 25,
-            "Hardcoded": 20, "Plaintext": 20,
+            "SQL Injection": 40, "Hardcoded": 25, "Plaintext": 20,
             "Unverified": 15, "HTTP": 10
         }
         
@@ -35,20 +46,13 @@ class CyberPredictiveIntegrator:
         
         return final_score, level
 
-    def _smart_retrieval(self, query):
-        """
-        Recupero bilanciato: interroga separatamente le categorie per non 'oscurare' i CAPEC.
-        """
-        # Interrogazioni mirate per categoria
-        m = self.db.similarity_search_with_score(query, k=3, filter={"type": "mitre_technique"})
-        c = self.db.similarity_search_with_score(query, k=3, filter={"type": "cwe_weakness"})
-        ca = self.db.similarity_search_with_score(query, k=4, filter={"type": "capec_pattern"})
-        
-        all_results = m + c + ca
+    def _smart_retrieval(self, text_segment):
+        """Recupera documenti dal DB vettoriale e isola gli ID (CWE, MITRE, CAPEC)."""
+        results = self.db.similarity_search_with_score(text_segment, k=6)
         valid_context = []
         found_ids = []
 
-        for doc, score in all_results:
+        for doc, score in results:
             if score <= self.threshold:
                 type_label = doc.metadata.get('type', 'N/A').upper()
                 id_label = doc.metadata.get('id', 'N/A')
@@ -60,14 +64,32 @@ class CyberPredictiveIntegrator:
         
         return "\n\n".join(valid_context), list(set(found_ids))
 
+    def _get_compliance_info(self, found_ids):
+        """Mappa gli ID tecnici verso gli standard internazionali via OpenCRE."""
+        compliance_list = []
+        for id_entry in found_ids:
+            try:
+                # Estrazione ID pulito (es. "CWE-943")
+                clean_id = id_entry.split(": ")[1]
+                if clean_id in self.opencre_data:
+                    for mapping in self.opencre_data[clean_id]:
+                        info = (f"- {clean_id} viola {mapping['standard']} "
+                                f"(Sezione {mapping['section']}) -> "
+                                f"Requisito CRE: {mapping['cre_name']}")
+                        compliance_list.append(info)
+            except: continue
+            
+        return "\n".join(list(set(compliance_list)))
+
     def analyze_security_report(self, path):
+        """Esegue l'analisi completa di una repository o di un file."""
         print(f"🔍 Analisi in corso su: {path}")
         content = ""
 
         if os.path.isdir(path):
             for root, _, files in os.walk(path):
                 for file in files:
-                    if file.endswith(('.py', '.json', '.txt', '.log', '.md', '.c', '.h')):
+                    if file.endswith(('.py', '.sh', '.json', '.txt', '.log', '.md', '.csv')):
                         try:
                             with open(os.path.join(root, file), 'r', encoding='utf-8', errors='ignore') as f:
                                 content += f"\n--- NOME FILE: {file} ---\n{f.read()}\n"
@@ -82,28 +104,32 @@ class CyberPredictiveIntegrator:
         if not content:
             return "Nessun dato trovato.", 0, "N/A", []
 
-        # FASE 1: Generazione descrizione tecnica intermedia (HyDE) per attivare i CAPEC
-        hyde_prompt = f"Analizza e descrivi la vulnerabilità, il pattern d'attacco e l'obiettivo tattico di: {content[:2000]}"
-        hyde_desc = self.llm.invoke(hyde_prompt).content
-
-        # FASE 2: Retrieval bilanciato usando la descrizione HyDE
-        rag_evidence, ids_list = self._smart_retrieval(hyde_desc)
+        # 1. Recupero evidenze tecniche (RAG)
+        rag_evidence, ids_list = self._smart_retrieval(content[:4000])
         
+        # 2. Arricchimento con conformità OpenCRE
+        compliance_text = self._get_compliance_info(ids_list)
+        
+        # 3. Generazione Analisi con LLM
         prompt = f"""
         [RUOLO: Senior Cyber Threat Intelligence Analyst]
         [ISTRUZIONI: Rispondi SEMPRE in ITALIANO]
         
-        CONTESTO RILEVATO:
+        CONTESTO RILEVATO DALLA REPOSITORY:
         {content[:5000]}
         
-        EVIDENZE RAG (CWE/MITRE/CAPEC):
+        EVIDENZE TECNICHE (CWE/MITRE/CAPEC):
         {rag_evidence}
         
+        RIFERIMENTI DI CONFORMITÀ (OpenCRE):
+        {compliance_text if compliance_text else "Nessuna mappatura di conformità trovata per gli ID rilevati."}
+        
         COMPITO:
-        1. RICONOSCIMENTO PATTERN: Collega le falle tra i diversi file.
-        2. SCENARIO PREVISTO: Descrivi la Kill Chain completa.
-        3. LISTA IDENTIFICATIVI: Cita e spiega esplicitamente ogni CWE, MITRE e CAPEC trovato nel database.
-        4. MITIGAZIONE: Fornisci una mitigazione tecnica basata sulle CWE trovate.
+        1. RICONOSCIMENTO PATTERN: Spiega come le falle interagiscono tra i diversi file.
+        2. SCENARIO PREVISTO: Descrivi la Kill Chain completa dell'attacco.
+        3. LISTA IDENTIFICATIVI: Elenca ogni CWE, MITRE ATT&CK e CAPEC pertinente.
+        4. CONFORMITÀ E STANDARD: Utilizzando i dati OpenCRE, specifica quali Standard internazionali (ISO 27001, NIST 800-53, OWASP) sono violati.
+        5. MITIGAZIONE: Fornisci una strategia di mitigazione tecnica basata sulle vulnerabilità trovate.
         """
         
         analysis = self.llm.invoke(prompt).content
@@ -113,20 +139,23 @@ class CyberPredictiveIntegrator:
 
 if __name__ == "__main__":
     predictor = CyberPredictiveIntegrator()
-    # Eseguiamo l'analisi sulla cartella test_repo
-    report_text, score, level, found_ids = predictor.analyze_security_report("../testing/vulnerable/hardcoded_creds.py")
     
-    print("\n" + "="*50)
+    # Percorso del test case
+    target_path = "../testing/vulnerable/final_stress_test"
+    
+    report_text, score, level, found_ids = predictor.analyze_security_report(target_path)
+    
+    print("\n" + "="*60)
     print(f"🛡️ LIVELLO DI RISCHIO: {level} ({score}/100)")
-    print("="*50)
+    print("="*60)
     
-    print("\n📚 RIFERIMENTI TROVATI NEL DATABASE (Mappatura Standard):")
+    print("\n📚 RIFERIMENTI E MAPPATURE:")
     if found_ids:
-        for ref_id in sorted(found_ids):
+        for ref_id in found_ids:
             print(f"  • {ref_id}")
     else:
         print("  • Nessun riferimento specifico trovato.")
 
     print("\n📝 ANALISI DETTAGLIATA:")
-    print("-" * 50)
+    print("-" * 60)
     print(report_text)
