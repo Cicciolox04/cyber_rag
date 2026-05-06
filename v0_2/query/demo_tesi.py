@@ -141,7 +141,7 @@ if __name__ == "__main__":
     predictor = CyberPredictiveIntegrator()
     
     # Percorso del test case
-    target_path = "../testing/vulnerable/final_stress_test"
+    target_path = "../testing/vulnerable/vulnerable.c"
     
     report_text, score, level, found_ids = predictor.analyze_security_report(target_path)
     

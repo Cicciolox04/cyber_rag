@@ -3,7 +3,7 @@
 
 void vulnerable_function(char *str) {
     char buffer[64];
-    // Il pattern critico è qui: strcpy non controlla i limiti del buffer
+    
     strcpy(buffer, str); 
     printf("Input ricevuto: %s\n", buffer);
 }
