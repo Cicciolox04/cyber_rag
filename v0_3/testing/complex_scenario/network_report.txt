@@ -1,0 +1,4 @@
+RILEVAMENTO ANOMALIE DI RETE:
+- Diverse connessioni in uscita verso l'IP 185.x.x.x sulla porta 80.
+- Il server di aggiornamento 'repo.external-service.io' non risponde più alle richieste HTTPS.
+- Rilevati pacchetti sospetti che tentano di enumerare le share SMB dal server 'updater'.
