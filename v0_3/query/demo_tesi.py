@@ -1,120 +1,126 @@
 import os
-import re
+import warnings
 from neo4j import GraphDatabase
-from PyPDF2 import PdfReader
-from langchain_ollama import ChatOllama
+from langchain_community.vectorstores import Neo4jVector
+from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-class CyberGraphIntegrator:
-    def __init__(self, uri, user, password, model_name="llama3"):
-        """Inizializza l'integratore basato su Graph RAG e Ollama."""
+# Silenziamo i warning di deprecazione per un output pulito nella tesi
+warnings.filterwarnings("ignore", category=UserWarning, message=".*db.index.vector.queryNodes.*")
+
+class MasterHybridRAG:
+    def __init__(self):
         self.url = "http://10.0.2.2:11434"
-        self.driver = GraphDatabase.driver(uri, auth=(user, password))
+        self.neo4j_url = "bolt://10.0.2.2:7687"
+        self.auth = ("neo4j", "ciaociao")
         
-        # Configurazione LLM (Consigliato Llama3 per la tesi)
-        self.llm = ChatOllama(
-            model=model_name,
-            temperature=0.1,
-            base_url=self.url
+        # PASSO 3: Per migliorare la logica, usiamo un modello di embedding 
+        # che lavora bene con concetti tecnici (nomic-embed-text)
+        self.embeddings = OllamaEmbeddings(model="nomic-embed-text", base_url=self.url)
+        self.llm = ChatOllama(model="llama3", temperature=0, base_url=self.url)
+        
+        # Configurazione Vector Stores (Tecniche e Debolezze)
+        self.vector_tech = Neo4jVector.from_existing_graph(
+            embedding=self.embeddings,
+            url=self.neo4j_url, username=self.auth[0], password=self.auth[1],
+            index_name="cyber_vector_index",
+            node_label="Technique",
+            text_node_properties=["description"],
+            embedding_node_property="embedding",
+            retrieval_query="RETURN node.description AS text, score, node {.*, graph_id: node.id, label: 'Technique'} AS metadata"
         )
         
-        # Regex per identificare tecniche MITRE nel codice/log
-        self.re_mitre = re.compile(r"T\d{4}(?:\.\d{3})?")
+        self.vector_weak = Neo4jVector.from_existing_graph(
+            embedding=self.embeddings,
+            url=self.neo4j_url, username=self.auth[0], password=self.auth[1],
+            index_name="weakness_vector_index",
+            node_label="Weakness",
+            text_node_properties=["description"],
+            embedding_node_property="embedding",
+            retrieval_query="RETURN node.description AS text, score, node {.*, graph_id: node.id, label: 'Weakness'} AS metadata"
+        )
+        
+        self.driver = GraphDatabase.driver(
+            self.neo4j_url, 
+            auth=self.auth,
+            notifications_min_severity="OFF" # Nasconde i messaggi di sistema
+        )
 
     def close(self):
-        self.driver.close()
+        """Chiude correttamente la connessione al database."""
+        if hasattr(self, 'driver'):
+            self.driver.close()
+            print("\n🔌 Sessione Neo4j terminata correttamente.")
 
-    def _get_graph_context(self, found_ids):
-        """Interroga Neo4j usando i 494 ponti di compliance e i 378 link tecnici."""
-        knowledge_base = []
-        with self.driver.session() as session:
-            for tid in found_ids:
-                # Query che attraversa la catena: Tecnica -> CWE -> Requirement
-                query = """
-                MATCH (t:Technique {id: $tid})
-                OPTIONAL MATCH (t)-[:HAS_WEAKNESS]->(w:Weakness)
-                OPTIONAL MATCH (t)-[:INFERRED_COMPLIANCE]->(r:Requirement)
-                RETURN t.name as name,
-                       collect(DISTINCT w.id) as weaknesses,
-                       collect(DISTINCT r.standard + " (" + r.section + "): " + r.name) as compliance
-                """
-                res = session.run(query, tid=tid).single()
-                if res:
-                    info = f"--- DATI PER {tid} ({res['name']}) ---\n"
-                    info += f"DEBOLEZZE: {', '.join(res['weaknesses']) if res['weaknesses'] else 'Nessuna'}\n"
-                    info += f"VIOLAZIONI: {', '.join(res['compliance']) if res['compliance'] else 'Dato non presente'}\n"
-                    knowledge_base.append(info)
-        
-        return "\n".join(knowledge_base)
-
-    def _calculate_risk_score(self, context, analysis):
-        """Score basato sulla densità delle relazioni nel grafo."""
-        score = 0
-        # Score basato sui 494 ponti di compliance attivati
-        violations_count = len(re.findall(r"\[!\]|Violazione", context + analysis))
-        score += min(violations_count * 15, 45)
-        
-        # Score basato sulle 378 relazioni HAS_WEAKNESS
-        if "CWE-" in context: score += 25
-        if "CRITICO" in analysis.upper(): score += 30
-        
-        final_score = min(score, 100)
-        level = "CRITICO 🔴" if final_score >= 85 else "ALTO 🟠" if final_score >= 60 else "MEDIO 🟡" if final_score >= 30 else "BASSO 🟢"
-        return final_score, level
-
-    def analyze_path(self, path):
-        """Legge file o intere cartelle e produce il report finale."""
-        print(f"🔍 Scansione in corso su: {path}")
-        raw_text = ""
-
-        # Logica di lettura file/directory
-        if os.path.isdir(path):
-            for root, _, files in os.walk(path):
-                for file in files:
-                    if file.endswith(('.py', '.c', '.log', '.txt', '.sh')):
-                        with open(os.path.join(root, file), 'r', encoding='utf-8', errors='ignore') as f:
-                            raw_text += f"\nFILE: {file}\n{f.read()}\n"
-        elif path.endswith('.pdf'):
-            reader = PdfReader(path)
-            raw_text = "\n".join([p.extract_text() for p in reader.pages])
-        else:
-            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                raw_text = f.read()
-
-        # 1. Estrazione ID Tecnici
-        found_ids = set(self.re_mitre.findall(raw_text))
-        
-        # 2. Arricchimento dal Grafo (Context Enrichment)
-        graph_context = self._get_graph_context(found_ids)
-
-        # 3. LangChain Generation
+    def _summarize_vulnerability_semantics(self, code):
+        """Analisi concettuale per migliorare la precisione del Vector Search."""
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "Sei un analista di Cyber Intelligence. Usa i dati del Knowledge Graph per validare le minacce."),
-            ("user", "REPORT TECNICO:\n{text}\n\nDATI DAL GRAFO:\n{context}\n\nGenera un'analisi in ITALIANO che spieghi la Kill Chain e le violazioni ISO/NIST.")
+            ("system", """Analizza il codice e descrivi la vulnerabilità principale in una frase breve (10-15 parole). 
+            NON citare ID (CWE-xxx o Txxx)."""),
+            ("user", "CODICE:\n{code}")
+        ])
+        chain = prompt | self.llm | StrOutputParser()
+        summary = chain.invoke({"code": code[:2000]})
+        print(f"🎯 Concetto identificato: {summary}")
+        return summary
+
+    def _get_deep_context(self, entities):
+        """Naviga nei 395 ponti di compliance del grafo"""
+        context = []
+        with self.driver.session() as session:
+            for ent in entities:
+                query = """
+                MATCH (n) WHERE n.id = $id
+                OPTIONAL MATCH (n)-[:HAS_WEAKNESS|VIOLATES|INFERRED_COMPLIANCE*1..2]->(r:Requirement)
+                RETURN n.id as id, n.name as name, labels(n)[0] as type,
+                       collect(DISTINCT r.standard + ' Sez. ' + r.section + ': ' + r.name) as compliance
+                """
+                res = session.run(query, id=ent['id']).single()
+                if res:
+                    info = f"\n[MATCH {res['type']}: {res['id']} - {res['name']}]\n"
+                    info += f"Ponti Compliance attivati: {res['compliance']}\n"
+                    context.append(info)
+        return "\n".join(context)
+
+    def analyze(self, file_path):
+        print(f"🔍 Avvio Analisi Avanzata su: {file_path}")
+        with open(file_path, 'r', encoding='utf-8') as f:
+            code = f.read()
+
+        # FASE 1: L'LLM estrae il concetto (Passo 2)
+        search_query = self._summarize_vulnerability_semantics(code)
+
+        # FASE 2: Cerchiamo il concetto nel Grafo invece del codice grezzo
+        docs_t = self.vector_tech.similarity_search(search_query, k=2)
+        docs_w = self.vector_weak.similarity_search(search_query, k=2)
+        
+        found_entities = [{'id': d.metadata['graph_id'], 'type': d.metadata['label']} 
+                          for d in docs_t + docs_w if 'graph_id' in d.metadata]
+        
+        # FASE 3: Esplorazione dei ponti logici
+        context = self._get_deep_context(found_entities)
+
+        # FASE 4: Report Finale
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "Sei un Senior Security Architect. Rispondi in ITALIANO. Usa i dati del grafo per mappare le violazioni ISO/NIST. Sii estremamente tecnico."),
+            ("user", "CODICE SORGENTE:\n{code}\n\nDATI ESTRATTI DAL GRAFO:\n{context}")
         ])
         
         chain = prompt | self.llm | StrOutputParser()
-        analysis = chain.invoke({"text": raw_text[:4000], "context": graph_context})
-        
-        # 4. Scoring
-        score, level = self._calculate_risk_score(graph_context, analysis)
-        
-        return analysis, score, level, found_ids
+        return chain.invoke({"code": code, "context": context}), found_entities
 
 if __name__ == "__main__":
-    # Configurazione (Usa le tue credenziali Neo4j)
-    integrator = CyberGraphIntegrator("bolt://10.0.2.2:7687", "neo4j", "ciaociao", model_name="llama3")
-    
-    # Input: accetta cartella o file singolo
-    target = "../testing/vulnerable.c" 
-    
-    report, score, level, ids = integrator.analyze_path(target)
-    
-    print("\n" + "="*60)
-    print(f"🛡️ LIVELLO DI RISCHIO: {level} ({score}/100)")
-    print(f"🆔 TECNICHE RILEVATE: {', '.join(ids)}")
-    print("="*60 + "\n")
-    print(report)
-    
-    integrator.close()
+    rag = MasterHybridRAG()
+    try:
+        target_file = "../testing/vulnerable.c"
+        report, entities = rag.analyze(target_file)
+        
+        print("\n" + "="*20 + " ENTITÀ RILEVATE (AUGMENTED) " + "="*20)
+        for ent in entities:
+            print(f"- [{ent['type']}] {ent['id']}")
+        
+        print("\n" + "="*30 + " REPORT FINALE " + "="*30)
+        print(report)
+    finally:
+        rag.close()
