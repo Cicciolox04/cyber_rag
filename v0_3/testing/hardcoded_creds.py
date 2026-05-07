@@ -1,7 +1,7 @@
 import requests
 
 def login_to_api():
-    # PATTERN: Credenziali hardcoded e comunicazione non sicura
+
     username = "admin"
     password = "SuperSecretPassword123!"
     
