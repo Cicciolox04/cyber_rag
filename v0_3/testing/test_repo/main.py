@@ -4,14 +4,14 @@ import config
 def sync_database():
     print(f"Avvio sincronizzazione API {config.API_VERSION}...")
     
-    # Utilizzo delle credenziali importate da config.py
+    
     payload = {
         "user": config.DB_USER,
         "token": config.DB_PASS
     }
     
     try:
-        # VULNERABILITÀ: Invio di credenziali in chiaro su protocollo HTTP
+        
         response = requests.post(config.BACKUP_SERVER, json=payload, timeout=5)
         
         if response.status_code == 200:
