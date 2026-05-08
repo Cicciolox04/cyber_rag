@@ -53,24 +53,23 @@ class RelationalLinkerAgent:
         print(f"✨ Archi HAS_WEAKNESS (Regex) creati: {count}")
 
     def run_inferences(self):
-        """Genera le inferenze strutturali per la compliance."""
-        print("🧠 Agente Linker: Generazione Inferenze e Ponti di Compliance...")
+        print("🧠 Agente Linker: Generazione Ponti di Compliance...")
         with self.driver.session() as session:
-            # 1. Technique -> Weakness (via Pattern)
+            # Crea HAS_WEAKNESS basandosi sulla catena Technique -> Pattern -> Weakness
             res_a = session.run("""
                 MATCH (t:Technique)-[:MAPS_TO_PATTERN]->(p:Pattern)-[:EXPLOITS]->(w:Weakness)
                 MERGE (t)-[r:HAS_WEAKNESS]->(w)
                 RETURN count(r) as count
             """).single()
             
-            # 2. Technique -> Requirement (Ponte finale di Compliance)
+            # Crea INFERRED_COMPLIANCE basandosi sulla catena Technique -> Weakness -> Requirement
             res_b = session.run("""
                 MATCH (t:Technique)-[:HAS_WEAKNESS]->(w:Weakness)-[:VIOLATES]->(r:Requirement)
                 MERGE (t)-[v:INFERRED_COMPLIANCE]->(r)
                 RETURN count(v) as count
             """).single()
             
-            print(f"   -> Nuove relazioni HAS_WEAKNESS (Inferite): {res_a['count']}")
+            print(f"   -> Nuove relazioni HAS_WEAKNESS: {res_a['count']}")
             print(f"   -> Ponti INFERRED_COMPLIANCE creati: {res_b['count']}")
 
     def verify(self):
