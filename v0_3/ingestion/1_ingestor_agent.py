@@ -18,34 +18,35 @@ class KnowledgeIngestorAgent:
         return 0
 
     def ingest_cwe(self, csv_path):
-        """Carica esclusivamente nodi Weakness."""
+        """Carica esclusivamente nodi Weakness con protezione dall'index shift."""
         print(f"📊 Analisi file CWE e popolamento grafo...")
         header_idx = self._find_header_row(csv_path)
-        df = pd.read_csv(csv_path, low_memory=False, skiprows=header_idx)
+        
+        # FIX: index_col=False impedisce a pandas di usare il CWE-ID come indice
+        df = pd.read_csv(csv_path, low_memory=False, skiprows=header_idx, index_col=False)
         df.columns = [c.strip() for c in df.columns]
 
         with self.driver.session() as session:
             count = 0
-            for index, row in df.iterrows():
-                # Usa l'indice come ID grezzo come da script originale
-                cwe_raw_id = str(index).strip() 
-                name = str(row.get('CWE-ID', '')).strip()
-                
-                if name.lower() in ['base', 'variant', 'class', 'nan']:
-                    name = str(row.get('Name', 'Unknown Weakness')).strip()
-
+            for _, row in df.iterrows():
+                # Estrazione sicura dei dati
+                raw_id = str(row.get('CWE-ID', '')).strip()
+                name = str(row.get('Name', 'Unknown Weakness')).strip()
                 description = str(row.get('Description', '')).strip()
-                if not cwe_raw_id or cwe_raw_id.lower() in ['nan', 'cwe-id'] or not description or description.lower() == 'nan':
+
+                # Salta righe non valide o senza descrizione
+                if not raw_id or raw_id.lower() in ['nan', ''] or not description or description.lower() == 'nan':
                     continue
 
-                cwe_id = f"CWE-{cwe_raw_id}" if "CWE" not in cwe_raw_id.upper() else cwe_raw_id
+                # Pulizia ID: trasforma "5" o "CWE-5" sempre in "CWE-5"
+                clean_id = f"CWE-{raw_id}" if "CWE" not in raw_id.upper() else raw_id
                 
                 session.run("""
                     MERGE (w:Weakness {id: $id})
                     SET w.name = $name, w.description = $description, w.source = 'MITRE CWE'
-                """, id=cwe_id, name=name, description=description)
+                """, id=clean_id, name=name, description=description)
                 count += 1
-        print(f"✨ {count} vulnerabilità CWE caricate come nodi 'Weakness'!")
+        print(f"✨ {count} vulnerabilità CWE caricate correttamente!")
 
     def ingest_capec(self, json_path):
         """Carica nodi Pattern e crea relazioni EXPLOITS verso Weakness."""
