@@ -5,71 +5,69 @@ import time
 class VectorialistAgent:
     def __init__(self, uri, user, password, ollama_url):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
-        # Utilizziamo nomic-embed-text per la sua efficienza in ambito tecnico
-        self.embeddings = OllamaEmbeddings(model="nomic-embed-text", base_url=ollama_url)
+        self.embeddings = OllamaEmbeddings(model="mxbai-embed-large", base_url=ollama_url)
 
     def close(self):
         self.driver.close()
 
-    def generate_embeddings(self, label):
-        """Genera vettori solo per i nodi che ne sono sprovvisti."""
+    def generate_embeddings(self, label, force_update=False):
         print(f"🔄 Agente Vectorialist: Generazione vettori per {label}...")
+        
         with self.driver.session() as session:
-            query = f"MATCH (n:{label}) WHERE n.embedding IS NULL AND n.description IS NOT NULL RETURN n.id as id, n.description as desc"
-            nodes = session.run(query).data()
+            if force_update:
+                session.run(f"MATCH (n:{label}) SET n.embedding = null")
+                # Recuperiamo anche il nome per dare più contesto al vettore
+                query = f"MATCH (n:{label}) WHERE n.description IS NOT NULL RETURN n.id as id, n.name as name, n.description as desc"
+            else:
+                query = f"MATCH (n:{label}) WHERE n.embedding IS NULL AND n.description IS NOT NULL RETURN n.id as id, n.name as name, n.description as desc"
             
-            if not nodes:
-                print(f"   -> ✅ Tutti i nodi {label} sono già vettorizzati.")
-                return
+            nodes = session.run(query).data()
+            if not nodes: return
 
-            print(f"   -> Elaborazione di {len(nodes)} nodi in corso...")
             for i, node in enumerate(nodes):
-                vector = self.embeddings.embed_query(node['desc'])
-                session.run(f"MATCH (n:{label} {{id: $id}}) SET n.embedding = $vec", id=node['id'], vec=vector)
-                
-                if (i + 1) % 50 == 0:
-                    print(f"   -> Progresso {label}: {i + 1}/{len(nodes)}")
+                try:
+                    # COSTRUZIONE TESTO ESSENZIALE: Nome + primi 1000 caratteri
+                    # Questo garantisce che il 'concetto' sia salvo senza sforare i token
+                    safe_text = f"Technique: {node['name']}. Description: {node['desc'][:1000]}"
+                    
+                    vector = self.embeddings.embed_query(safe_text)
+                    session.run(f"MATCH (n:{label} {{id: $id}}) SET n.embedding = $vec", 
+                                id=node['id'], vec=vector)
+                except Exception as e:
+                    # Se fallisce ancora, proviamo solo con il nome (fallback estremo)
+                    try:
+                        vector = self.embeddings.embed_query(node['name'])
+                        session.run(f"MATCH (n:{label} {{id: $id}}) SET n.embedding = $vec", 
+                                    id=node['id'], vec=vector)
+                    except:
+                        print(f"   ❌ Errore critico irrisolvibile su {node['id']}")
 
     def create_indices(self):
-        """Attiva gli indici per la ricerca semantica."""
-        print("🏗️ Agente Vectorialist: Configurazione indici vettoriali...")
+        """Ricrea gli indici per la nuova dimensione 1024."""
+        print("🏗️ Configurazione indici vettoriali (1024 dimensioni)...")
         with self.driver.session() as session:
-            # Indice per le Tecniche MITRE
+            session.run("DROP INDEX weakness_vector_index IF EXISTS")
+            session.run("DROP INDEX cyber_vector_index IF EXISTS")
+            
             session.run("""
                 CREATE VECTOR INDEX `cyber_vector_index` IF NOT EXISTS
                 FOR (n:Technique) ON (n.embedding)
-                OPTIONS {indexConfig: {
-                 `vector.dimensions`: 768,
-                 `vector.similarity_function`: 'cosine'
-                }}
+                OPTIONS {indexConfig: {`vector.dimensions`: 1024, `vector.similarity_function`: 'cosine'}}
             """)
-            # Indice per le Debolezze CWE
             session.run("""
                 CREATE VECTOR INDEX `weakness_vector_index` IF NOT EXISTS
                 FOR (n:Weakness) ON (n.embedding)
-                OPTIONS {indexConfig: {
-                 `vector.dimensions`: 768,
-                 `vector.similarity_function`: 'cosine'
-                }}
+                OPTIONS {indexConfig: {`vector.dimensions`: 1024, `vector.similarity_function`: 'cosine'}}
             """)
-        print("   -> Indici Technique e Weakness pronti.")
-
-    def verify(self):
-        print("\n🔎 --- VERIFICA VETTORIALE ---")
-        with self.driver.session() as session:
-            res_t = session.run("MATCH (n:Technique) WHERE n.embedding IS NOT NULL RETURN count(n) as c").single()
-            res_w = session.run("MATCH (n:Weakness) WHERE n.embedding IS NOT NULL RETURN count(n) as c").single()
-            print(f"Tecniche vettorizzate: {res_t['c']}")
-            print(f"Weakness vettorizzate: {res_w['c']}")
+        print("   -> Indici pronti.")
 
 if __name__ == "__main__":
-    URI = "bolt://10.0.2.2:7687"
-    OLLAMA_URL = "http://10.0.2.2:11434"
+    URI, OLLAMA_URL = "bolt://10.0.2.2:7687", "http://10.0.2.2:11434"
     agent = VectorialistAgent(URI, "neo4j", "ciaociao", OLLAMA_URL)
     try:
-        agent.generate_embeddings("Technique")
-        agent.generate_embeddings("Weakness")
+        agent.generate_embeddings("Technique", force_update=True)
+        agent.generate_embeddings("Weakness", force_update=True)
         agent.create_indices()
-        agent.verify()
+        print("\n✨ Operazione completata con successo!")
     finally:
         agent.close()

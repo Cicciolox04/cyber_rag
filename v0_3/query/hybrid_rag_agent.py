@@ -8,20 +8,21 @@ from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-# 🚫 Silenziamento warning e log
-warnings.filterwarnings("ignore", category=UserWarning, message=".*db.index.vector.queryNodes.*")
+# 🔇 Pulizia output
+warnings.filterwarnings("ignore")
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
 class HybridRAGAnalystAgent:
     def __init__(self, uri, user, password, ollama_url):
         self.auth = (user, password)
         self.neo4j_url = uri
-        self.embeddings = OllamaEmbeddings(model="nomic-embed-text", base_url=ollama_url)
+        # Usiamo mxbai per la massima precisione semantica (1024 dimensioni)
+        self.embeddings = OllamaEmbeddings(model="mxbai-embed-large", base_url=ollama_url)
         self.llm = ChatOllama(model="llama3", temperature=0, base_url=ollama_url)
         
         self.vector_tech = self._init_vs("cyber_vector_index", "Technique")
         self.vector_weak = self._init_vs("weakness_vector_index", "Weakness")
-        self.driver = GraphDatabase.driver(uri, auth=self.auth, notifications_min_severity="OFF")
+        self.driver = GraphDatabase.driver(uri, auth=self.auth)
 
     def _init_vs(self, index_name, label):
         return Neo4jVector.from_existing_graph(
@@ -33,57 +34,67 @@ class HybridRAGAnalystAgent:
         )
 
     def _get_compliance_context(self, entities):
-        """Naviga i 395 ponti di compliance verso ISO/NIST."""
+        """Recupera la catena di compliance dal grafo per le entità trovate."""
         context = []
         with self.driver.session() as session:
             for ent in entities:
                 query = """
                 MATCH (n) WHERE n.id = $id
                 OPTIONAL MATCH (n)-[:HAS_WEAKNESS|VIOLATES|INFERRED_COMPLIANCE*1..2]->(r:Requirement)
-                RETURN n.id as id, n.name as name, labels(n)[0] as type,
+                RETURN n.id as id, n.name as name, labels(n)[0] as type, n.description as desc,
                        collect(DISTINCT r.standard + ' ' + r.section + ': ' + r.name) as compliance
                 """
                 res = session.run(query, id=ent['id']).single()
-                if res and res['compliance']:
-                    context.append(f"[{res['type']} {res['id']}] {res['name']}\nNorme: {res['compliance']}")
-        return "\n".join(context)
+                if res:
+                    comp = ", ".join(res['compliance']) if res['compliance'] else "Nessuna norma mappata"
+                    context.append(f"🔍 [{res['type']}] {res['id']}: {res['name']}\nDEF: {res['desc']}\nNORME: {comp}")
+        return "\n\n".join(context)
 
     def analyze_content(self, path_str):
-        """Punto di ingresso dinamico per File o Cartelle."""
         path = Path(path_str)
         workspace_data = {}
 
-        # 1. Caricamento Dati
-        if path.is_file():
-            print(f"🔍 Analisi File Singolo: {path.name}")
-            with open(path, 'r') as f: workspace_data[path.name] = f.read()
-        else:
-            print(f"📁 Analisi Workspace: {path.name}")
-            for f_path in path.rglob('*'):
-                if f_path.is_file() and f_path.suffix in ['.py', '.c', '.cpp', '.h', '.js']:
-                    with open(f_path, 'r') as f: workspace_data[f_path.name] = f.read()
+        # 1. Caricamento Sorgenti
+        files = list(path.rglob('*')) if path.is_dir() else [path]
+        for f_path in files:
+            if f_path.is_file() and f_path.suffix in ['.py', '.c', '.cpp', '.h', '.js']:
+                with open(f_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    workspace_data[f_path.name] = f.read()
 
-        # 2. Estrazione Concetto Globale (Chain of Risk)
+        if not workspace_data:
+            return "Nessun file supportato trovato.", []
+
         full_context = "\n".join([f"--- FILE: {n} ---\n{c}" for n, c in workspace_data.items()])
+
+        # 2. Estrazione Concetto (Chain of Risk) - QUI DEFINIAMO 'concept'
         concept_prompt = ChatPromptTemplate.from_messages([
-            ("system", "Sei un Security Architect. Identifica la catena di rischio che collega questi file. Descrivi la vulnerabilità principale in una frase."),
+            ("system", """Sei un Security Architect. Analizza il codice e descrivi il rischio principale. 
+            Sii estremamente preciso sui flussi di dati (chi controlla cosa, dove va l'input)."""),
             ("user", "CODICE:\n{code}")
         ])
-        concept = (concept_prompt | self.llm | StrOutputParser()).invoke({"code": full_context[:6000]})
-        print(f"🎯 Concetto rilevato: {concept}")
+        # La variabile 'concept' nasce qui
+        concept = (concept_prompt | self.llm | StrOutputParser()).invoke({"code": full_context[:8000]})
+        print(f"🎯 Analisi preliminare: {concept[:150]}...")
 
-        # 3. Ricerca nel Grafo (MITRE + CWE)
-        docs = self.vector_tech.similarity_search(concept, k=2) + self.vector_weak.similarity_search(concept, k=2)
-        entities = [{'id': d.metadata['graph_id'], 'label': d.metadata['label']} for d in docs]
+        # 3. Ricerca nel Grafo (k=5 per dare ampiezza alla generalizzazione)
+        tech_docs = self.vector_tech.similarity_search(concept, k=3)
+        weak_docs = self.vector_weak.similarity_search(concept, k=5)
         
-        # 4. Recupero Compliance e Report
+        entities = [{'id': d.metadata['graph_id'], 'label': d.metadata['label']} for d in (tech_docs + weak_docs)]
+        
+        # 4. Report Finale con Ragionamento Critico
         graph_data = self._get_compliance_context(entities)
         report_prompt = ChatPromptTemplate.from_messages([
-            ("system", "Sei un Senior Security Architect. Rispondi in ITALIANO citando i controlli NIST/ISO del grafo."),
-            ("user", "CONTESTO GRAFO:\n{context}\n\nCONCETTO RILEVATO: {concept}")
+            ("system", """Sei un Senior Security Architect. Genera un report professionale in ITALIANO.
+            
+            REGOLE DI RAGIONAMENTO:
+            1. Confronta il 'FLUSSO DEL CODICE' con le 'DEFINIZIONI TECNICHE' del grafo.
+            2. Se trovi più vulnerabilità simili, seleziona quella che descrive meglio il comportamento (es. distingue tra richieste fatte dal client e richieste fatte dal server).
+            3. Cita sempre i controlli NIST/ISO associati ai nodi del grafo."""),
+            ("user", "DATI DAL GRAFO:\n{context}\n\nFLUSSO DEL CODICE:\n{concept}")
         ])
-        report = (report_prompt | self.llm | StrOutputParser()).invoke({"context": graph_data, "concept": concept})
         
+        report = (report_prompt | self.llm | StrOutputParser()).invoke({"context": graph_data, "concept": concept})
         return report, entities
 
     def close(self):
@@ -92,8 +103,8 @@ class HybridRAGAnalystAgent:
 if __name__ == "__main__":
     analyst = HybridRAGAnalystAgent("bolt://10.0.2.2:7687", "neo4j", "ciaociao", "http://10.0.2.2:11434")
     try:
-        # Ora puoi passare sia un file che una cartella senza errori!
-        report, found = analyst.analyze_content("../testing/test_repo/")
-        print("\n" + "="*20 + " RISULTATI " + "="*20 + f"\n{report}")
+        # Puntiamo alla cartella di test
+        report, found = analyst.analyze_content("../testing/hardcoded_creds.py")
+        print("\n" + "═"*25 + " REPORT FINALE " + "═"*25 + f"\n{report}\n" + "═"*65)
     finally:
         analyst.close()
