@@ -8,7 +8,6 @@ from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-# 🔇 Pulizia output
 warnings.filterwarnings("ignore")
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
@@ -16,10 +15,30 @@ class HybridRAGAnalystAgent:
     def __init__(self, uri, user, password, ollama_url):
         self.auth = (user, password)
         self.neo4j_url = uri
-        # Usiamo mxbai per la massima precisione semantica (1024 dimensioni)
         self.embeddings = OllamaEmbeddings(model="mxbai-embed-large", base_url=ollama_url)
         self.llm = ChatOllama(model="llama3", temperature=0, base_url=ollama_url)
         
+        # Inizializzazione Prompt come attributi della classe
+        self.concept_prompt = ChatPromptTemplate.from_messages([
+            ("system", """Sei un esperto di Cyber Security. Analizza il codice e descrivi brevemente l'azione tecnica 
+            usando terminologia standard (es. 'Hardcoded Credentials', 'SSRF', 'SQL Injection').
+            """),
+            ("user", "CODICE DA ANALIZZARE:\n{code}")
+        ])
+
+        self.report_prompt = ChatPromptTemplate.from_messages([
+            ("system", """Sei un Senior Security Architect. Riceverai un elenco di possibili vulnerabilità dal grafo. Genera un report in ITALIANO.
+            
+            IL TUO COMPITO:
+            1. Confronta il 'CONCETTO TECNICO' con le 'DEFINIZIONI' del grafo.
+            2. Seleziona la SINGOLA Weakness (CWE) e la SINGOLA Technique (MITRE) che meglio descrivono il rischio reale.
+            3. Non creare una lista di 10 punti. Scrivi un'analisi coesa.
+            4. Cita esplicitamente gli ID selezionati e i controlli NIST/ISO associati nel grafo.
+            
+            Se trovi ID molto simili (es. CWE-798 e CWE-259), scegli quello che appare più completo nel contesto del grafo."""),
+            ("user", "CONTESTO DAL GRAFO:\n{context}\n\nCONCETTO TECNICO:\n{concept}")
+        ])
+
         self.vector_tech = self._init_vs("cyber_vector_index", "Technique")
         self.vector_weak = self._init_vs("weakness_vector_index", "Weakness")
         self.driver = GraphDatabase.driver(uri, auth=self.auth)
@@ -34,7 +53,6 @@ class HybridRAGAnalystAgent:
         )
 
     def _get_compliance_context(self, entities):
-        """Recupera la catena di compliance dal grafo per le entità trovate."""
         context = []
         with self.driver.session() as session:
             for ent in entities:
@@ -54,47 +72,33 @@ class HybridRAGAnalystAgent:
         path = Path(path_str)
         workspace_data = {}
 
-        # 1. Caricamento Sorgenti
         files = list(path.rglob('*')) if path.is_dir() else [path]
         for f_path in files:
             if f_path.is_file() and f_path.suffix in ['.py', '.c', '.cpp', '.h', '.js']:
                 with open(f_path, 'r', encoding='utf-8', errors='ignore') as f:
                     workspace_data[f_path.name] = f.read()
 
-        if not workspace_data:
-            return "Nessun file supportato trovato.", []
+        if not workspace_data: return "Nessun file trovato.", []
 
         full_context = "\n".join([f"--- FILE: {n} ---\n{c}" for n, c in workspace_data.items()])
 
-        # 2. Estrazione Concetto (Chain of Risk) - QUI DEFINIAMO 'concept'
-        concept_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Sei un Security Architect. Analizza il codice e descrivi il rischio principale. 
-            Sii estremamente preciso sui flussi di dati (chi controlla cosa, dove va l'input)."""),
-            ("user", "CODICE:\n{code}")
-        ])
-        # La variabile 'concept' nasce qui
-        concept = (concept_prompt | self.llm | StrOutputParser()).invoke({"code": full_context[:8000]})
-        print(f"🎯 Analisi preliminare: {concept[:150]}...")
+        # 1. Estrazione Concetto
+        concept = (self.concept_prompt | self.llm | StrOutputParser()).invoke({"code": full_context[:8000]})
+        print(f"🎯 Concetto tecnico: {concept[:150]}...")
 
-        # 3. Ricerca nel Grafo (k=5 per dare ampiezza alla generalizzazione)
+        # 2. Ricerca Semantica (Aumentiamo k a 10 per le Weakness per non perdere CWE-798)
         tech_docs = self.vector_tech.similarity_search(concept, k=3)
-        weak_docs = self.vector_weak.similarity_search(concept, k=5)
+        weak_docs = self.vector_weak.similarity_search(concept, k=10)
         
         entities = [{'id': d.metadata['graph_id'], 'label': d.metadata['label']} for d in (tech_docs + weak_docs)]
-        
-        # 4. Report Finale con Ragionamento Critico
+        print(f"🔗 ID trovati: {[e['id'] for e in entities]}")
+
+        # 3. Report Finale
         graph_data = self._get_compliance_context(entities)
-        report_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Sei un Senior Security Architect. Genera un report professionale in ITALIANO.
-            
-            REGOLE DI RAGIONAMENTO:
-            1. Confronta il 'FLUSSO DEL CODICE' con le 'DEFINIZIONI TECNICHE' del grafo.
-            2. Se trovi più vulnerabilità simili, seleziona quella che descrive meglio il comportamento (es. distingue tra richieste fatte dal client e richieste fatte dal server).
-            3. Cita sempre i controlli NIST/ISO associati ai nodi del grafo."""),
-            ("user", "DATI DAL GRAFO:\n{context}\n\nFLUSSO DEL CODICE:\n{concept}")
-        ])
-        
-        report = (report_prompt | self.llm | StrOutputParser()).invoke({"context": graph_data, "concept": concept})
+        report = (self.report_prompt | self.llm | StrOutputParser()).invoke({
+            "context": graph_data, 
+            "concept": concept
+        })
         return report, entities
 
     def close(self):
@@ -103,8 +107,8 @@ class HybridRAGAnalystAgent:
 if __name__ == "__main__":
     analyst = HybridRAGAnalystAgent("bolt://10.0.2.2:7687", "neo4j", "ciaociao", "http://10.0.2.2:11434")
     try:
-        # Puntiamo alla cartella di test
-        report, found = analyst.analyze_content("../testing/hardcoded_creds.py")
-        print("\n" + "═"*25 + " REPORT FINALE " + "═"*25 + f"\n{report}\n" + "═"*65)
+        # Test sul file delle credenziali
+        report, found = analyst.analyze_content("../testing/complex_scenario")
+        print("\n" + "═"*30 + " REPORT FINALE " + "═"*30 + f"\n{report}\n" + "═"*75)
     finally:
         analyst.close()
