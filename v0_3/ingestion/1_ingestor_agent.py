@@ -1,3 +1,4 @@
+import re
 import pandas as pd
 import json
 from neo4j import GraphDatabase
@@ -17,6 +18,52 @@ class KnowledgeIngestorAgent:
                     return i
         return 0
 
+    def ingest_exploitdb(self, csv_path):
+        """Carica exploit da Exploit-DB e crea nodi Vulnerability (CVE) come ponte."""
+        print(f"💣 Ingestione Exploit-DB da {csv_path}...")
+        # Il file CSV di exploit-db usa la codifica UTF-8
+        df = pd.read_csv(csv_path, low_memory=False)
+        
+        base_path = "/usr/share/exploitdb/"
+
+        with self.driver.session() as session:
+            count_exploit = 0
+            count_cve = 0
+            for _, row in df.iterrows():
+                edb_id = str(row['id'])
+                description = str(row['description'])
+                # Creiamo il path assoluto per poter leggere il codice in seguito
+                full_file_path = base_path + str(row['file'])
+                
+                # 1. Crea il nodo Exploit
+                session.run("""
+                    MERGE (e:Exploit {id: $id})
+                    SET e.description = $desc, 
+                        e.file_path = $path, 
+                        e.type = $type, 
+                        e.platform = $platform,
+                        e.verified = $verified
+                """, id=edb_id, desc=description, path=full_file_path, 
+                     type=row['type'], platform=row['platform'], verified=bool(row['verified']))
+                count_exploit += 1
+
+                # 2. Estrazione CVE dalla colonna 'codes'
+                codes = str(row.get('codes', ''))
+                if codes and codes != 'nan':
+                    # Cerchiamo pattern tipo CVE-YYYY-NNNN
+                    cve_list = re.findall(r'CVE-\d{4}-\d+', codes)
+                    for cve_id in cve_list:
+                        # Crea il nodo Vulnerability (CVE) e collegalo
+                        session.run("""
+                            MERGE (v:Vulnerability {id: $cve_id})
+                            WITH v
+                            MATCH (e:Exploit {id: $edb_id})
+                            MERGE (e)-[:EXPLOITS_VULNERABILITY]->(v)
+                        """, cve_id=cve_id, edb_id=edb_id)
+                        count_cve += 1
+                        
+        print(f"✨ Caricati {count_exploit} Exploit e creati {count_cve} collegamenti a CVE!")
+    
     def ingest_cwe(self, csv_path):
         """Carica esclusivamente nodi Weakness con protezione dall'index shift."""
         print(f"📊 Analisi file CWE e popolamento grafo...")
@@ -170,6 +217,9 @@ if __name__ == "__main__":
         agent.ingest_capec('../data/capec.json')
         agent.ingest_mitre('../data/mitre.json')
         agent.ingest_opencre('../data/opencre_map.json')
+
+        # AGGIUNTA: Caricamento Exploit-DB da Kali
+        agent.ingest_exploitdb('/usr/share/exploitdb/files_exploits.csv')
         agent.verify()
     finally:
         agent.close()
