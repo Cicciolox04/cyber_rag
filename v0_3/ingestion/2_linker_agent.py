@@ -8,9 +8,44 @@ class RelationalLinkerAgent:
     def close(self):
         self.driver.close()
 
+    def perform_normalization(self):
+        """
+        Pulisce e normalizza gli ID nel database per garantire il match perfetto.
+        Rimuove i prefissi 'CWE-' lasciando solo il formato numerico puro.
+        """
+        print("🧹 Fase 1: Normalizzazione ID (Vulnerability & Weakness)...")
+        with self.driver.session() as session:
+            # Pulisce gli ID nelle Vulnerability (CVE)
+            session.run("""
+                MATCH (v:Vulnerability) 
+                WHERE v.cwe_id IS NOT NULL
+                SET v.cwe_id = trim(replace(v.cwe_id, 'CWE-', ''))
+            """)
+            # Pulisce gli ID nei nodi Weakness (CWE)
+            session.run("""
+                MATCH (w:Weakness)
+                SET w.id = trim(replace(w.id, 'CWE-', ''))
+            """)
+            print("   ✅ ID normalizzati in formato numerico puro.")
+
+    def perform_mass_linking(self):
+        """
+        Crea relazioni INSTANCE_OF massive tra Vulnerability e Weakness.
+        Sostituisce e potenzia 'link_vulnerability_to_weakness'.
+        """
+        print("🔗 Fase 2: Creazione massiva relazioni INSTANCE_OF...")
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (v:Vulnerability), (w:Weakness)
+                WHERE v.cwe_id = w.id
+                MERGE (v)-[r:INSTANCE_OF]->(w)
+                RETURN count(r) as count
+            """)
+            print(f"   ✨ Creati {result.single()['count']} collegamenti INSTANCE_OF!")
+
     def link_mitre_to_capec(self, csv_file):
         """Mappa Tecniche a Pattern CAPEC."""
-        print(f"🕵️ Agente Linker: Mappatura Technique -> Pattern (CSV: {csv_file})...")
+        print(f"🕵️ Mappatura Technique -> Pattern (CSV: {csv_file})...")
         re_capec_id = re.compile(r'^"?(\d+),')
         re_attack_id = re.compile(r'TAXONOMY NAME:ATTACK:ENTRY ID:([\d\.]+)')
         
@@ -32,26 +67,9 @@ class RelationalLinkerAgent:
                             if res['f'] > 0: count += 1
         print(f"✨ Relazioni MAPS_TO_PATTERN create: {count}")
 
-    def link_vulnerability_to_weakness(self):
-        """
-        Collega CVE (Vulnerability) a CWE (Weakness).
-        Utile se hai importato le CVE con l'attributo cwe_id.
-        """
-        print("🔗 Agente Linker: Collegamento Vulnerability (CVE) -> Weakness (CWE)...")
-        query = """
-        MATCH (v:Vulnerability)
-        WHERE v.cwe_id IS NOT NULL
-        MATCH (w:Weakness {id: v.cwe_id})
-        MERGE (v)-[r:INSTANCE_OF]->(w)
-        RETURN count(r) as count
-        """
-        with self.driver.session() as session:
-            res = session.run(query).single()
-            print(f"   -> Creati {res['count']} collegamenti INSTANCE_OF")
-
     def link_mitre_to_cwe_regex(self):
-        """Estrae legami diretti Technique -> Weakness dalle descrizioni."""
-        print("🔎 Agente Linker: Scansione descrizioni MITRE per estrazione CWE...")
+        """Estrae legami Technique -> Weakness dalle descrizioni."""
+        print("🔎 Scansione descrizioni MITRE per estrazione CWE...")
         re_cwe = re.compile(r"CWE-(\d+)", re.IGNORECASE)
         
         with self.driver.session() as session:
@@ -60,7 +78,8 @@ class RelationalLinkerAgent:
             for tech in techniques:
                 found_cwes = re_cwe.findall(tech['desc'])
                 for cwe_num in set(found_cwes):
-                    cwe_id = f"CWE-{cwe_num}"
+                    # Usiamo l'ID normalizzato (solo numero) per il match
+                    cwe_id = cwe_num.strip() 
                     res = session.run("""
                         MATCH (t:Technique {id: $tid}), (w:Weakness {id: $wid})
                         MERGE (t)-[r:HAS_WEAKNESS]->(w)
@@ -70,8 +89,8 @@ class RelationalLinkerAgent:
         print(f"✨ Archi HAS_WEAKNESS (Regex) creati: {count}")
 
     def run_inferences(self):
-        """Genera scorciatoie logiche per l'analisi RAG."""
-        print("🧠 Agente Linker: Generazione Ponti di Analisi e Compliance...")
+        """Genera scorciatoie logiche e attiva la Compliance."""
+        print("🧠 Fase 3: Generazione Ponti di Analisi e Compliance...")
         with self.driver.session() as session:
             # 1. Technique -> Weakness (via CAPEC)
             res_a = session.run("""
@@ -87,8 +106,7 @@ class RelationalLinkerAgent:
                 RETURN count(v) as count
             """).single()
 
-            # 3. Exploit -> Requirement (Scorciatoia di Pericolo Reale)
-            # Se esiste un exploit per una CVE che porta a un Requisito violato
+            # 3. Exploit -> Requirement (Scorciatoia di Pericolo Reale - DIRECTLY_THREATENS)
             res_c = session.run("""
                 MATCH (e:Exploit)-[:EXPLOITS_VULNERABILITY]->(v:Vulnerability)-[:INSTANCE_OF]->(w:Weakness)-[:VIOLATES]->(r:Requirement)
                 MERGE (e)-[rel:DIRECTLY_THREATENS]->(r)
@@ -104,10 +122,11 @@ class RelationalLinkerAgent:
             
             print(f"   -> Nuove relazioni HAS_WEAKNESS: {res_a['count']}")
             print(f"   -> Ponti INFERRED_COMPLIANCE: {res_b['count']}")
-            print(f"   -> Requisiti minacciati da exploit reali: {res_c['count']}")
+            print(f"   -> Ponti DIRECTLY_THREATENS attivati: {res_c['count']}")
             print(f"   -> Tecniche con exploit pronti su Kali: {res_d['count']}")
 
     def verify(self):
+        """Report finale dello stato delle relazioni nel grafo."""
         print("\n📊 --- REPORT DI VERIFICA RELAZIONI ---")
         query = "MATCH ()-[r]->() RETURN type(r) as Tipo, count(r) as Totale"
         with self.driver.session() as session:
@@ -119,16 +138,18 @@ if __name__ == "__main__":
     URI = "bolt://10.0.2.2:7687"
     linker = RelationalLinkerAgent(URI, "neo4j", "***REMOVED***")
     try:
-        # 1. Mapping standard
+        # Step 1: Normalizzazione e Linking Massivo (Core del Super Linker)
+        linker.perform_normalization()
+        linker.perform_mass_linking()
+        
+        # Step 2: Mapping standard e Regex
         linker.link_mitre_to_capec('../data/658.csv')
-        
-        # 2. Collegamenti Vulnerabilità (Assicurati di aver popolato le CVE)
-        linker.link_vulnerability_to_weakness()
-        
-        # 3. Estrazione Regex e Inferenze pesanti
         linker.link_mitre_to_cwe_regex()
+        
+        # Step 3: Generazione Inferenze e Compliance
         linker.run_inferences()
         
+        # Step 4: Verifica
         linker.verify()
     finally:
         linker.close()

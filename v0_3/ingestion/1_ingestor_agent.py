@@ -1,6 +1,8 @@
 import re
 import pandas as pd
 import json
+import os
+import glob
 from neo4j import GraphDatabase
 
 class KnowledgeIngestorAgent:
@@ -18,24 +20,77 @@ class KnowledgeIngestorAgent:
                     return i
         return 0
 
+    def build_knowledge_base(self, folder_path):
+        """
+        Espande il grafo creando nodi Vulnerability (CVE) dai JSON NIST.
+        Utilizza la logica MERGE per integrare intelligenza massiva.
+        """
+        abs_path = os.path.abspath(folder_path)
+        # Cerchiamo tutti i file JSON che iniziano con CVE-
+        files = glob.glob(os.path.join(abs_path, "CVE-*.json"))
+        print(f"🚀 Espansione Knowledge Base da: {abs_path}")
+
+        with self.driver.session() as session:
+            for file_path in files:
+                print(f"📖 Analisi file NIST: {os.path.basename(file_path)}...")
+                with open(file_path, 'r') as f:
+                    data = json.load(f)
+                
+                records = data.get('cve_items', [])
+                batch = []
+
+                for rec in records:
+                    cve_id = rec.get('id')
+                    
+                    # Estrazione CWE: normalizziamo subito a formato numerico puro
+                    cwe_id = None
+                    for w in rec.get('weaknesses', []):
+                        for desc_wrapper in w.get('description', []):
+                            val = desc_wrapper.get('value')
+                            if val and val.startswith('CWE-'):
+                                cwe_id = val.replace('CWE-', '').strip()
+                                break
+                        if cwe_id: break
+                    
+                    # Estrazione Descrizione NIST
+                    description = ""
+                    for d in rec.get('descriptions', []):
+                        if d.get('lang') == 'en':
+                            description = d.get('value')
+                            break
+
+                    if cve_id:
+                        batch.append({
+                            'id': cve_id.strip(),
+                            'cwe': cwe_id, 
+                            'desc': description.strip() if description else "Descrizione non disponibile"
+                        })
+
+                if batch:
+                    # MERGE crea il nodo se non esiste, o lo aggiorna se esiste
+                    session.run("""
+                        UNWIND $data as item
+                        MERGE (v:Vulnerability {id: item.id})
+                        ON CREATE SET v.cwe_id = item.cwe, 
+                                      v.description = item.desc,
+                                      v.status = 'KB_ONLY'
+                        ON MATCH SET v.cwe_id = item.cwe, 
+                                     v.description = item.desc
+                    """, data=batch)
+                    print(f"   ✅ {len(batch)} record di intelligence integrati.")
+
     def ingest_exploitdb(self, csv_path):
-        """Carica exploit da Exploit-DB e crea nodi Vulnerability (CVE) come ponte."""
+        """Carica exploit da Exploit-DB e collega a CVE esistenti o nuove."""
         print(f"💣 Ingestione Exploit-DB da {csv_path}...")
-        # Il file CSV di exploit-db usa la codifica UTF-8
         df = pd.read_csv(csv_path, low_memory=False)
-        
         base_path = "/usr/share/exploitdb/"
 
         with self.driver.session() as session:
             count_exploit = 0
-            count_cve = 0
             for _, row in df.iterrows():
                 edb_id = str(row['id'])
-                description = str(row['description'])
-                # Creiamo il path assoluto per poter leggere il codice in seguito
                 full_file_path = base_path + str(row['file'])
                 
-                # 1. Crea il nodo Exploit
                 session.run("""
                     MERGE (e:Exploit {id: $id})
                     SET e.description = $desc, 
@@ -43,57 +98,51 @@ class KnowledgeIngestorAgent:
                         e.type = $type, 
                         e.platform = $platform,
                         e.verified = $verified
-                """, id=edb_id, desc=description, path=full_file_path, 
+                """, id=edb_id, desc=str(row['description']), path=full_file_path, 
                      type=row['type'], platform=row['platform'], verified=bool(row['verified']))
                 count_exploit += 1
 
-                # 2. Estrazione CVE dalla colonna 'codes'
                 codes = str(row.get('codes', ''))
                 if codes and codes != 'nan':
-                    # Cerchiamo pattern tipo CVE-YYYY-NNNN
                     cve_list = re.findall(r'CVE-\d{4}-\d+', codes)
                     for cve_id in cve_list:
-                        # Crea il nodo Vulnerability (CVE) e collegalo
+                        # Colleghiamo l'exploit alla vulnerabilità, aggiornandone lo status
                         session.run("""
                             MERGE (v:Vulnerability {id: $cve_id})
                             WITH v
                             MATCH (e:Exploit {id: $edb_id})
                             MERGE (e)-[:EXPLOITS_VULNERABILITY]->(v)
+                            SET v.status = 'HAS_EXPLOIT'
                         """, cve_id=cve_id, edb_id=edb_id)
-                        count_cve += 1
                         
-        print(f"✨ Caricati {count_exploit} Exploit e creati {count_cve} collegamenti a CVE!")
-    
+        print(f"✨ Caricati {count_exploit} Exploit e mappati su CVE!")
+
     def ingest_cwe(self, csv_path):
-        """Carica esclusivamente nodi Weakness con protezione dall'index shift."""
-        print(f"📊 Analisi file CWE e popolamento grafo...")
+        """Carica nodi Weakness normalizzati a formato numerico puro."""
+        print(f"📊 Popolamento grafo con debolezze CWE...")
         header_idx = self._find_header_row(csv_path)
-        
-        # FIX: index_col=False impedisce a pandas di usare il CWE-ID come indice
         df = pd.read_csv(csv_path, low_memory=False, skiprows=header_idx, index_col=False)
         df.columns = [c.strip() for c in df.columns]
 
         with self.driver.session() as session:
             count = 0
             for _, row in df.iterrows():
-                # Estrazione sicura dei dati
                 raw_id = str(row.get('CWE-ID', '')).strip()
                 name = str(row.get('Name', 'Unknown Weakness')).strip()
                 description = str(row.get('Description', '')).strip()
 
-                # Salta righe non valide o senza descrizione
-                if not raw_id or raw_id.lower() in ['nan', ''] or not description or description.lower() == 'nan':
+                if not raw_id or raw_id.lower() in ['nan', ''] or not description:
                     continue
 
-                # Pulizia ID: trasforma "5" o "CWE-5" sempre in "CWE-5"
-                clean_id = f"CWE-{raw_id}" if "CWE" not in raw_id.upper() else raw_id
+                # Normalizzazione: usiamo solo il numero per facilitare il match
+                clean_id = raw_id.replace('CWE-', '').strip()
                 
                 session.run("""
                     MERGE (w:Weakness {id: $id})
                     SET w.name = $name, w.description = $description, w.source = 'MITRE CWE'
                 """, id=clean_id, name=name, description=description)
                 count += 1
-        print(f"✨ {count} vulnerabilità CWE caricate correttamente!")
+        print(f"✨ {count} nodi Weakness pronti.")
 
     def ingest_capec(self, json_path):
         """Carica nodi Pattern e crea relazioni EXPLOITS verso Weakness."""
@@ -103,7 +152,6 @@ class KnowledgeIngestorAgent:
 
         with self.driver.session() as session:
             count_patterns = 0
-            count_rels = 0
             for obj in capec_data['objects']:
                 if obj.get('type') == 'attack-pattern' and not obj.get('x_mitre_deprecated'):
                     name = obj.get('name')
@@ -116,7 +164,9 @@ class KnowledgeIngestorAgent:
                             source = ref.get('source_name', '').lower()
                             ext_id = ref.get('external_id')
                             if source == 'capec': capec_id = ext_id
-                            elif source == 'cwe': related_cwes.append(ext_id)
+                            elif source == 'cwe': 
+                                # Puliamo anche qui per coerenza
+                                related_cwes.append(str(ext_id).replace('CWE-', ''))
                     
                     if capec_id == "N/A": continue
 
@@ -132,12 +182,11 @@ class KnowledgeIngestorAgent:
                             MATCH (w:Weakness {id: $w_id})
                             MERGE (p)-[:EXPLOITS]->(w)
                         """, p_id=capec_id, w_id=cwe_id)
-                        count_rels += 1
-        print(f"✨ Caricati {count_patterns} Pattern e create {count_rels} relazioni 'EXPLOITS'!")
+        print(f"✨ Pattern caricati: {count_patterns}")
 
     def ingest_mitre(self, json_path):
         """Carica esclusivamente nodi Technique."""
-        print(f"📖 Caricamento tecniche da {json_path}...")
+        print(f"📖 Caricamento tecniche MITRE ATT&CK...")
         with open(json_path, 'r') as f:
             mitre_data = json.load(f)
 
@@ -161,43 +210,37 @@ class KnowledgeIngestorAgent:
                         SET t.name = $name, t.description = $desc
                     """, id=tech_id, name=name, desc=desc)
                     count_tech += 1
-        print(f"✨ Creati {count_tech} nodi Technique!")
+        print(f"✨ Tecniche caricate: {count_tech}")
 
     def ingest_opencre(self, json_path):
         """Carica i Requisiti e i legami VIOLATES dalle CWE."""
-        print(f"📜 Ingestione OpenCRE: Collegamento vulnerabilità agli Standard...")
+        print(f"📜 Ingestione OpenCRE: Mapping verso Standard di Compliance...")
         with open(json_path, "r", encoding="utf-8") as f:
             opencre_data = json.load(f)
 
         with self.driver.session() as session:
             count_reqs = 0
-            count_links = 0
             for cwe_id, mappings in opencre_data.items():
-                clean_cwe = f"CWE-{cwe_id}" if not str(cwe_id).startswith("CWE-") else cwe_id
+                # Pulizia ID CWE per match numerico
+                clean_cwe = str(cwe_id).replace('CWE-', '').strip()
                 for m in mappings:
                     req_id = f"{m['standard']}-{m['section']}"
-                    # 1. Crea il nodo del Requisito
                     session.run("""
                         MERGE (r:Requirement {id: $req_id})
                         SET r.standard = $standard, r.section = $section, r.name = $cre_name
                     """, req_id=req_id, standard=m['standard'], section=m['section'], cre_name=m['cre_name'])
                     count_reqs += 1
 
-                    # 2. Crea la relazione VIOLATES
-                    res = session.run("""
+                    session.run("""
                         MATCH (w:Weakness {id: $cwe_id})
                         MATCH (r:Requirement {id: $req_id})
                         MERGE (w)-[:VIOLATES]->(r)
-                        RETURN count(r) as linked
-                    """, cwe_id=clean_cwe, req_id=req_id).single()
-                    
-                    if res['linked'] > 0:
-                        count_links += 1
-        print(f"✨ Requisiti caricati: {count_reqs} | Collegamenti 'VIOLATES': {count_links}")
+                    """, cwe_id=clean_cwe, req_id=req_id)
+        print(f"✨ Requisiti e mapping di Compliance completati.")
 
     def verify(self):
         """Verifica lo stato attuale del database."""
-        print("\n📊 --- REPORT DI VERIFICA ---")
+        print("\n📊 --- STATISTICHE GRAFO ---")
         query = """
         MATCH (n) RETURN labels(n)[0] as Etichetta, count(n) as Totale
         UNION ALL
@@ -206,20 +249,22 @@ class KnowledgeIngestorAgent:
         with self.driver.session() as session:
             res = session.run(query)
             for record in res:
-                print(f"{record['Etichetta']:<15} | {record['Totale']}")
+                print(f"{record['Etichetta']:<25} | {record['Totale']}")
 
 if __name__ == "__main__":
     URI = "bolt://10.0.2.2:7687"
     agent = KnowledgeIngestorAgent(URI, "neo4j", "***REMOVED***")
     try:
-        # Eseguiamo i tre compiti core in sequenza
+        # Step 1: Caricamento Strutture di Base
         agent.ingest_cwe('../data/cwe_list.csv')
         agent.ingest_capec('../data/capec.json')
         agent.ingest_mitre('../data/mitre.json')
         agent.ingest_opencre('../data/opencre_map.json')
 
-        # AGGIUNTA: Caricamento Exploit-DB da Kali
+        # Step 2: Espansione Intelligence e Exploit Reali
+        agent.build_knowledge_base('../data/cve_data')
         agent.ingest_exploitdb('/usr/share/exploitdb/files_exploits.csv')
+        
         agent.verify()
     finally:
         agent.close()

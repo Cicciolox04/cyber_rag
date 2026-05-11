@@ -20,19 +20,20 @@ class HybridRAGAnalystAgent:
         self.llm = ChatOllama(model="llama3", temperature=0, base_url=ollama_url)
         
         self.concept_prompt = ChatPromptTemplate.from_messages([
-            ("system", "Sei un esperto di Cyber Security. Analizza il codice e descrivi l'azione tecnica usando terminologia standard."),
+            ("system", "Sei un esperto di Cyber Security. Estrai il concetto tecnico principale dal codice (es. SQL Injection)."),
             ("user", "CODICE DA ANALIZZARE:\n{code}")
         ])
 
         self.report_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Sei un Senior Security Architect. Genera un report in ITALIANO.
-            1. Analizza i dati del grafo (Exploit, CVE, CWE, Requisiti NIST/ISO).
-            2. Spiega come un exploit reale trovato nel sistema possa violare norme specifiche.
-            3. Cita gli ID (CWE-XXX, CVE-YYYY-XXXX) e i nomi dei file exploit se presenti."""),
+            ("system", """Sei un Senior Security Architect. Genera un report professionale in ITALIANO.
+            1. Analizza le relazioni del grafo fornite nel CONTESTO.
+            2. Collega il CONCETTO TECNICO alle norme NIST/ISO trovate.
+            3. Spiega chiaramente: 'Poiché il codice presenta [Debolezza], esso viola il controllo [Requisito]'.
+            4. Se trovi un Exploit nel contesto, cita il suo ID e file_path."""),
             ("user", "CONTESTO DAL GRAFO:\n{context}\n\nCONCETTO TECNICO:\n{concept}")
         ])
 
-        # Inizializzazione dei 4 magazzini vettoriali
+        # Inizializzazione dei magazzini vettoriali con protezione per descrizioni lunghe
         self.vector_tech = self._init_vs("technique_vector_index", "Technique")
         self.vector_weak = self._init_vs("weakness_vector_index", "Weakness")
         self.vector_vuln = self._init_vs("vulnerability_vector_index", "Vulnerability")
@@ -41,14 +42,25 @@ class HybridRAGAnalystAgent:
         self.driver = GraphDatabase.driver(uri, auth=self.auth)
 
     def _init_vs(self, index_name, label):
-        """Inizializza la connessione vettoriale per una specifica categoria."""
+        """
+        Versione ottimizzata: usa ID come testo base e ripristina i metadati 
+        necessari per evitare KeyError.
+        """
         return Neo4jVector.from_existing_graph(
-            embedding=self.embeddings, url=self.neo4j_url, 
-            username=self.auth[0], password=self.auth[1],
-            index_name=index_name, node_label=label,
-            text_node_properties=["description"], # Usiamo la descrizione NIST/Kali
+            embedding=self.embeddings,
+            url=self.neo4j_url,
+            username=self.auth[0],
+            password=self.auth[1],
+            index_name=index_name,
+            node_label=label,
+            text_node_properties=["id"], # Veloce da caricare
             embedding_node_property="embedding",
-            retrieval_query="RETURN node.description AS text, score, node {.*, graph_id: node.id, label: labels(node)[0]} AS metadata"
+            # Ripristiniamo la mappatura esplicita di graph_id
+            retrieval_query=f"""
+                RETURN node.id AS text, 
+                       score, 
+                       node {{.*, graph_id: node.id, label: labels(node)[0]}} AS metadata
+            """
         )
 
     def _get_compliance_context(self, entities):
@@ -56,25 +68,24 @@ class HybridRAGAnalystAgent:
         context = []
         with self.driver.session() as session:
             for ent in entities:
-                # Query ottimizzata per navigare le nuove relazioni (INSTANCE_OF, DIRECTLY_THREATENS)
+                # Navigazione fino a 3 salti (CVE -> CWE -> Requirement)
                 query = """
                 MATCH (n) WHERE n.id = $id
                 OPTIONAL MATCH (n)-[:INSTANCE_OF|EXPLOITS_VULNERABILITY|DIRECTLY_THREATENS|VIOLATES|HAS_WEAKNESS*1..3]->(r:Requirement)
-                RETURN n.id as id, n.name as name, labels(n)[0] as type, n.description as desc,
+                RETURN n.id as id, n.name as name, labels(n)[0] as type, n.description as desc, n.file_path as path,
                        collect(DISTINCT r.standard + ' ' + r.section + ': ' + r.name) as compliance
                 """
                 res = session.run(query, id=ent['id']).single()
                 if res:
-                    comp = ", ".join(res['compliance']) if res['compliance'] else "Nessun percorso di compliance trovato"
+                    comp = ", ".join(res['compliance']) if res['compliance'] else "Nessun requisito mappato direttamente"
                     name_str = res['name'] if res['name'] else "N/A"
-                    context.append(f"🔍 [{res['type']}] {res['id']} ({name_str})\nDEF: {res['desc'][:500]}\nNORME: {comp}")
+                    path_info = f"\nFILE EXPLOIT: {res['path']}" if res.get('path') else ""
+                    context.append(f"🔍 [{res['type']}] {res['id']} ({name_str})\nDEF: {res['desc'][:500]}{path_info}\nNORME: {comp}")
         return "\n\n".join(context)
 
     def analyze_content(self, path_str):
         path = Path(path_str)
         workspace_data = {}
-
-        # Caricamento file per l'analisi del concetto tecnico
         files = list(path.rglob('*')) if path.is_dir() else [path]
         for f_path in files:
             if f_path.is_file() and f_path.suffix in ['.py', '.c', '.cpp', '.js']:
@@ -84,12 +95,10 @@ class HybridRAGAnalystAgent:
         if not workspace_data: return "Nessun codice trovato.", []
         full_context = "\n".join([f"--- FILE: {n} ---\n{c}" for n, c in workspace_data.items()])
 
-        # 1. Estrazione Concetto tramite LLM
         concept = (self.concept_prompt | self.llm | StrOutputParser()).invoke({"code": full_context[:8000]})
         print(f"🎯 Concetto tecnico estratto: {concept[:100]}...")
 
-        # 2. Ricerca Semantica Multi-Livello
-        print("🔎 Ricerca semantica nel grafo (Techniques, Weaknesses, CVEs, Exploits)...")
+        print("🔎 Ricerca semantica nel grafo...")
         results = []
         results.extend(self.vector_tech.similarity_search(concept, k=2))
         results.extend(self.vector_weak.similarity_search(concept, k=3))
@@ -98,7 +107,6 @@ class HybridRAGAnalystAgent:
         
         entities = [{'id': d.metadata['graph_id'], 'label': d.metadata['label']} for d in results]
         
-        # 3. Traversing del Grafo e Report Finale
         graph_data = self._get_compliance_context(entities)
         report = (self.report_prompt | self.llm | StrOutputParser()).invoke({
             "context": graph_data, 
@@ -112,8 +120,8 @@ class HybridRAGAnalystAgent:
 if __name__ == "__main__":
     analyst = HybridRAGAnalystAgent("bolt://10.0.2.2:7687", "neo4j", "***REMOVED***", "http://10.0.2.2:11434")
     try:
-        # Percorso alla cartella con i tuoi file di test
-        report, found = analyst.analyze_content("../testing/hardcoded_creds.py")
+        # Percorso del file da testare (es. hardcoded_creds.py)
+        report, found = analyst.analyze_content("../testing/vulnerable.c")
         print("\n" + "═"*30 + " REPORT DI ANALISI IBRIDA " + "═"*30)
         print(report)
         print("═"*86)
