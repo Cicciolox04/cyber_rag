@@ -24,12 +24,25 @@ class HybridRAGAnalystAgent:
             ("user", "CODICE DA ANALIZZARE:\n{code}")
         ])
 
+        # In hybrid_rag_agent.py
         self.report_prompt = ChatPromptTemplate.from_messages([
             ("system", """Sei un Senior Security Architect. Genera un report professionale in ITALIANO.
-            1. Analizza le relazioni del grafo fornite nel CONTESTO.
-            2. Collega il CONCETTO TECNICO alle norme NIST/ISO trovate.
-            3. Spiega chiaramente: 'Poiché il codice presenta [Debolezza], esso viola il controllo [Requisito]'.
-            4. Se trovi un Exploit nel contesto, cita il suo ID e file_path."""),
+            Usa OBBLIGATORIAMENTE questi tag per separare le sezioni, senza aggiungere altro testo tra di esse:
+
+            [ANALISI]
+            (Descrivi qui la vulnerabilità trovata)
+
+            [IDENTIFICATIVI]
+            (Elenca qui CVE, CWE e ID Exploit-DB dal grafo)
+
+            [KILL_CHAIN]
+            (Descrivi come l'attaccante usa l'exploit trovato)
+
+            [MITIGAZIONE]
+            (Suggerisci come correggere il codice)
+
+            [STANDARD]
+            (Cita le norme NIST 800-53 o ISO 27001 violate)"""),
             ("user", "CONTESTO DAL GRAFO:\n{context}\n\nCONCETTO TECNICO:\n{concept}")
         ])
 
