@@ -1,0 +1,23 @@
+[
+  {
+    "target": "10.0.0.15",
+    "os": "Linux 5.x",
+    "scanned_ports": [
+      {
+        "port": 80,
+        "service": "http",
+        "product": "Apache httpd",
+        "version": "2.4.49",
+        "confidence": "high"
+      },
+      {
+        "port": 22,
+        "service": "ssh",
+        "product": "OpenSSH",
+        "version": "8.2p1",
+        "confidence": "high"
+      }
+    ],
+    "scan_summary": "Rilevato server web esposto con versione software obsoleta."
+  }
+]

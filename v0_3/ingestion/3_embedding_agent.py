@@ -46,6 +46,9 @@ class VectorialistAgent:
             for i, node in enumerate(nodes):
                 try:
                     # COSTRUZIONE DEL TESTO SEMANTICO (Contextual Prompting)
+                    if label == "Pattern":
+                        # Per le CAPEC includiamo il nome e la descrizione per catturare il comportamento
+                        safe_text = f"Attack Pattern: {node.get('name', '')}. Description: {node['desc'][:1200]}"
                     if label == "Exploit":
                         safe_text = f"Exploit: {node['desc']}. Platform: {node.get('platform', 'N/A')}. Type: {node.get('type', 'N/A')}"
                     elif label == "Vulnerability":
@@ -73,7 +76,8 @@ class VectorialistAgent:
                 ("technique_vector_index", "Technique"),
                 ("weakness_vector_index", "Weakness"),
                 ("vulnerability_vector_index", "Vulnerability"),
-                ("exploit_vector_index", "Exploit")
+                ("exploit_vector_index", "Exploit"),
+                ("pattern_vector_index", "Pattern") # NUOVO INDICE
             ]
             
             for index_name, label in indices:
@@ -99,6 +103,8 @@ if __name__ == "__main__":
         # Per Technique e Weakness possiamo indicizzare tutto (volumi ridotti)
         agent.generate_embeddings("Technique", force_update=False)
         agent.generate_embeddings("Weakness", force_update=False)
+
+        agent.generate_embeddings("Pattern", force_update=False)
         
         # Creazione indici
         agent.create_indices()

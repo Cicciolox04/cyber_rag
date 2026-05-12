@@ -1,0 +1,5 @@
+May 12 10:45:01 server1 sshd[12345]: Failed password for root from 192.168.1.100 port 54321 ssh2
+May 12 10:45:03 server1 sshd[12345]: Failed password for root from 192.168.1.100 port 54322 ssh2
+May 12 10:45:05 server1 sshd[12345]: Failed password for admin from 192.168.1.100 port 54323 ssh2
+May 12 10:45:07 server1 sshd[12345]: Failed password for user from 192.168.1.100 port 54324 ssh2
+May 12 10:45:09 server1 sshd[12345]: Connection closed by authenticating user root 192.168.1.100 port 54325 [preauth]
