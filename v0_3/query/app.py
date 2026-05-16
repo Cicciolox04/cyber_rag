@@ -1,5 +1,5 @@
 import gradio as gr
-from hybrid_rag_agent import HybridRAGAnalystAgent
+from hybrid_rag_agent_v2 import HybridRAGAnalystAgent
 import re
 
 # Configurazione connessioni
@@ -12,8 +12,8 @@ def parse_report(report_text):
         "ANALISI": "Nessun dato.",
         "IDENTIFICATIVI": "Nessun dato.",
         "KILL_CHAIN": "Nessun dato.",
+        "STANDARD": "Nessun dato.",
         "MITIGAZIONE": "Nessun dato.",
-        "STANDARD": "Nessun dato."
     }
     
     # Regex per estrarre il contenuto tra i tag
@@ -27,8 +27,8 @@ def parse_report(report_text):
         sections["ANALISI"], 
         sections["IDENTIFICATIVI"], 
         sections["KILL_CHAIN"], 
+        sections["STANDARD"],
         sections["MITIGAZIONE"], 
-        sections["STANDARD"]
     )
 
 def run_ui_analysis(file_obj):
@@ -62,11 +62,12 @@ with gr.Blocks(theme=gr.themes.Soft(), title="CyberRAG Dashboard") as demo:
                 with gr.TabItem("⛓️ KILL CHAIN"):
                     out_kill = gr.Markdown("Percorso d'attacco ipotizzato.")
                 
+                with gr.TabItem("📜 STANDARD"):
+                    out_std = gr.Markdown("Mappatura NIST/ISO.")
+
                 with gr.TabItem("🛠️ MITIGAZIONE"):
                     out_mitig = gr.Markdown("Soluzioni consigliate.")
                 
-                with gr.TabItem("📜 STANDARD"):
-                    out_std = gr.Markdown("Mappatura NIST/ISO.")
 
     gr.Markdown("--- \n *Sviluppato per Tesi di Laurea in Cyber Intelligence*")
 

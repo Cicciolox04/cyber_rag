@@ -22,7 +22,10 @@ class HybridRAGAnalystAgent:
         # PROMPT EVOLUTO: Ora estrae pattern indipendentemente dall'input
         self.extraction_prompt = ChatPromptTemplate.from_messages([
             ("system", """Sei un esperto SOC Analyst e Security Researcher. 
-            Analizza l'input (Codice, Log o Scansione) e identifica il 'Security Pattern' principale.
+            Analizza l'input (Codice, Log o Scansione) ed estrai il 'Security Pattern' principale.
+            
+            Genera poche parole chiave che rappresentano il PATTERN RILEVATO.
+
             - Se è CODICE: identifica la vulnerabilità (es. Buffer Overflow).
             - Se è un LOG: identifica l'attacco in corso (es. Password Spraying).
             - Se è una SCANSIONE: identifica il servizio vulnerabile o la CVE (es. Apache RCE)."""),
@@ -33,16 +36,19 @@ class HybridRAGAnalystAgent:
             ("system", """Sei un Senior Security Architect. Genera un report professionale in ITALIANO.
             Usa OBBLIGATORIAMENTE questi tag:
 
-            [IDENTIFICAZIONE_MINACCIA]
+            [ANALISI]
             (Descrivi cosa è stato rilevato: vulnerabilità nel codice, attacco nei log o falla nella rete)
 
-            [ENTITÀ_GRAFO]
+            [IDENTIFICATIVI]
             (Elenca CVE, CWE, CAPEC e Tecniche MITRE correlate)
 
-            [ANALISI_IMPATT_COMPLIANCE]
+            [KILL CHAIN]
+            (Ipotizza quali saranno le prossime mosse dell'attaccante: come verrà sfruttata la vulnerabilità trovata?)
+
+            [STANDARD]
             (Cita le norme NIST 800-53 o ISO 27001 violate)
 
-            [PIANO_AZIONE]
+            [MITIGAZIONE]
             (Suggerisci correzioni al codice o modifiche alla configurazione di rete/firewall)"""),
             ("user", "CONTESTO DAL GRAFO:\n{context}\n\nPATTERN RILEVATO:\n{concept}")
         ])
@@ -63,16 +69,13 @@ class HybridRAGAnalystAgent:
         Versione ottimizzata: usa ID come testo base e ripristina i metadati 
         necessari per evitare KeyError.
         """
-        return Neo4jVector.from_existing_graph(
+        return Neo4jVector.from_existing_index(
             embedding=self.embeddings,
             url=self.neo4j_url,
             username=self.auth[0],
             password=self.auth[1],
             index_name=index_name,
-            node_label=label,
-            text_node_properties=["id"], # Veloce da caricare
-            embedding_node_property="embedding",
-            # Ripristiniamo la mappatura esplicita di graph_id
+            # Passiamo la retrieval query per mantenere la tua struttura di metadati custom
             retrieval_query=f"""
                 RETURN node.id AS text, 
                        score, 
@@ -165,7 +168,7 @@ if __name__ == "__main__":
     analyst = HybridRAGAnalystAgent("bolt://10.0.2.2:7687", "neo4j", "***REMOVED***", "http://10.0.2.2:11434")
     try:
         # Percorso del file da testare (es. hardcoded_creds.py)
-        report, found = analyst.analyze_content("../testing/scan_report.json")
+        report, found = analyst.analyze_content("../testing/final_stress_test")
         print("\n" + "═"*30 + " REPORT DI ANALISI IBRIDA " + "═"*30)
         print(report)
         print("═"*86)

@@ -8,7 +8,28 @@ from neo4j import GraphDatabase
 class KnowledgeIngestorAgent:
     def __init__(self, uri, user, password):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
+        self.setup_constraints()
 
+    def setup_constraints(self):
+        """Crea vincoli di unicità per garantire l'integrità e velocizzare l'ingestione."""
+        print("⚙️ Configurazione vincoli di unicità (Constraints)...")
+        # Elenco dei vincoli per ogni etichetta del grafo
+        constraints = [
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (v:Vulnerability) REQUIRE v.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (w:Weakness) REQUIRE w.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (p:Pattern) REQUIRE p.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (t:Technique) REQUIRE t.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (e:Exploit) REQUIRE e.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (r:Requirement) REQUIRE r.id IS UNIQUE"
+        ]
+        with self.driver.session() as session:
+            for query in constraints:
+                try:
+                    session.run(query)
+                except Exception as e:
+                    print(f"   ⚠️ Nota sul vincolo: {e}")
+        print("✅ Vincoli pronti.")
+    
     def close(self):
         self.driver.close()
 
@@ -22,13 +43,17 @@ class KnowledgeIngestorAgent:
 
     def build_knowledge_base(self, folder_path):
         """
-        Espande il grafo creando nodi Vulnerability (CVE) dai JSON NIST.
-        Utilizza la logica MERGE per integrare intelligenza massiva.
+        Carica esclusivamente le CVE comprese tra il 2023 e il 2026.
         """
         abs_path = os.path.abspath(folder_path)
-        # Cerchiamo tutti i file JSON che iniziano con CVE-
-        files = glob.glob(os.path.join(abs_path, "CVE-*.json"))
-        print(f"🚀 Espansione Knowledge Base da: {abs_path}")
+        all_files = glob.glob(os.path.join(abs_path, "CVE-*.json"))
+        
+        # Filtro: teniamo solo i file che contengono gli anni 2023, 2024, 2025 o 2026 nel nome
+        target_years = ["2023", "2024", "2025", "2026"]
+        files = [f for f in all_files if any(year in os.path.basename(f) for year in target_years)]
+        
+        print(f"🚀 Espansione Knowledge Base (Target: 2023-2026) da: {abs_path}")
+        print(f"📂 File pronti per l'ingestione: {[os.path.basename(f) for f in files]}")
 
         with self.driver.session() as session:
             for file_path in files:
@@ -41,8 +66,6 @@ class KnowledgeIngestorAgent:
 
                 for rec in records:
                     cve_id = rec.get('id')
-                    
-                    # Estrazione CWE: normalizziamo subito a formato numerico puro
                     cwe_id = None
                     for w in rec.get('weaknesses', []):
                         for desc_wrapper in w.get('description', []):
@@ -52,7 +75,6 @@ class KnowledgeIngestorAgent:
                                 break
                         if cwe_id: break
                     
-                    # Estrazione Descrizione NIST
                     description = ""
                     for d in rec.get('descriptions', []):
                         if d.get('lang') == 'en':
@@ -63,11 +85,11 @@ class KnowledgeIngestorAgent:
                         batch.append({
                             'id': cve_id.strip(),
                             'cwe': cwe_id, 
-                            'desc': description.strip() if description else "Descrizione non disponibile"
+                            'desc': description.strip() if description else "N/A"
                         })
 
                 if batch:
-                    # MERGE crea il nodo se non esiste, o lo aggiorna se esiste
+                    # Grazie ai vincoli, il MERGE non esegue più scansioni totali della tabella
                     session.run("""
                         UNWIND $data as item
                         MERGE (v:Vulnerability {id: item.id})
@@ -77,7 +99,7 @@ class KnowledgeIngestorAgent:
                         ON MATCH SET v.cwe_id = item.cwe, 
                                      v.description = item.desc
                     """, data=batch)
-                    print(f"   ✅ {len(batch)} record di intelligence integrati.")
+                    print(f"   ✅ {len(batch)} record integrati.")
 
     def ingest_exploitdb(self, csv_path):
         """Carica exploit da Exploit-DB e collega a CVE esistenti o nuove."""
