@@ -19,31 +19,38 @@ class HybridRAGAnalystAgent:
         self.embeddings = OllamaEmbeddings(model="mxbai-embed-large", base_url=ollama_url)
         self.llm = ChatOllama(model="llama3", temperature=0, base_url=ollama_url)
         
-        self.concept_prompt = ChatPromptTemplate.from_messages([
-            ("system", "Sei un esperto di Cyber Security. Estrai il concetto tecnico principale dal codice (es. SQL Injection)."),
-            ("user", "CODICE DA ANALIZZARE:\n{code}")
+        # PROMPT EVOLUTO: Ora estrae pattern indipendentemente dall'input
+        self.extraction_prompt = ChatPromptTemplate.from_messages([
+            ("system", """Sei un esperto SOC Analyst e Security Researcher. 
+            Analizza l'input (Codice, Log o Scansione) ed estrai il 'Security Pattern' principale.
+            
+            Genera poche parole chiave che rappresentano il PATTERN RILEVATO.
+
+            - Se è CODICE: identifica la vulnerabilità (es. Buffer Overflow).
+            - Se è un LOG: identifica l'attacco in corso (es. Password Spraying).
+            - Se è una SCANSIONE: identifica il servizio vulnerabile o la CVE (es. Apache RCE)."""),
+            ("user", "INPUT DA ANALIZZARE:\n{content}")
         ])
 
-        # In hybrid_rag_agent.py
         self.report_prompt = ChatPromptTemplate.from_messages([
             ("system", """Sei un Senior Security Architect. Genera un report professionale in ITALIANO.
-            Usa OBBLIGATORIAMENTE questi tag per separare le sezioni, senza aggiungere altro testo tra di esse:
+            Usa OBBLIGATORIAMENTE questi tag:
 
             [ANALISI]
-            (Descrivi qui la vulnerabilità trovata)
+            (Descrivi cosa è stato rilevato: vulnerabilità nel codice, attacco nei log o falla nella rete)
 
             [IDENTIFICATIVI]
-            (Elenca qui CVE, CWE e ID Exploit-DB dal grafo)
+            (Elenca CVE, CWE, CAPEC e Tecniche MITRE correlate)
 
-            [KILL_CHAIN]
-            (Descrivi come l'attaccante usa l'exploit trovato)
-
-            [MITIGAZIONE]
-            (Suggerisci come correggere il codice)
+            [KILL CHAIN]
+            (Ipotizza quali saranno le prossime mosse dell'attaccante: come verrà sfruttata la vulnerabilità trovata?)
 
             [STANDARD]
-            (Cita le norme NIST 800-53 o ISO 27001 violate)"""),
-            ("user", "CONTESTO DAL GRAFO:\n{context}\n\nCONCETTO TECNICO:\n{concept}")
+            (Cita le norme NIST 800-53 o ISO 27001 violate)
+
+            [MITIGAZIONE]
+            (Suggerisci correzioni al codice o modifiche alla configurazione di rete/firewall)"""),
+            ("user", "CONTESTO DAL GRAFO:\n{context}\n\nPATTERN RILEVATO:\n{concept}")
         ])
 
         # Inizializzazione dei magazzini vettoriali con protezione per descrizioni lunghe
@@ -52,6 +59,9 @@ class HybridRAGAnalystAgent:
         self.vector_vuln = self._init_vs("vulnerability_vector_index", "Vulnerability")
         self.vector_expl = self._init_vs("exploit_vector_index", "Exploit")
         
+        # AGGIUNTA: Pattern Index per i Log
+        self.vector_patt = self._init_vs("pattern_vector_index", "Pattern")
+        
         self.driver = GraphDatabase.driver(uri, auth=self.auth)
 
     def _init_vs(self, index_name, label):
@@ -59,16 +69,13 @@ class HybridRAGAnalystAgent:
         Versione ottimizzata: usa ID come testo base e ripristina i metadati 
         necessari per evitare KeyError.
         """
-        return Neo4jVector.from_existing_graph(
+        return Neo4jVector.from_existing_index(
             embedding=self.embeddings,
             url=self.neo4j_url,
             username=self.auth[0],
             password=self.auth[1],
             index_name=index_name,
-            node_label=label,
-            text_node_properties=["id"], # Veloce da caricare
-            embedding_node_property="embedding",
-            # Ripristiniamo la mappatura esplicita di graph_id
+            # Passiamo la retrieval query per mantenere la tua struttura di metadati custom
             retrieval_query=f"""
                 RETURN node.id AS text, 
                        score, 
@@ -96,36 +103,63 @@ class HybridRAGAnalystAgent:
                     context.append(f"🔍 [{res['type']}] {res['id']} ({name_str})\nDEF: {res['desc'][:500]}{path_info}\nNORME: {comp}")
         return "\n\n".join(context)
 
+
+    def _detect_input_type(self, file_path):
+        """Determina il tipo di analisi in base all'estensione."""
+        ext = file_path.suffix.lower()
+        if ext in ['.py', '.c', '.cpp', '.js', '.go']: return "CODE"
+        if ext in ['.log', '.txt', '.csv']: return "LOG"
+        if ext in ['.json', '.xml', '.nmap']: return "SCAN"
+        return "UNKNOWN"
+
     def analyze_content(self, path_str):
         path = Path(path_str)
         workspace_data = {}
         files = list(path.rglob('*')) if path.is_dir() else [path]
+        
+        # Filtro estensioni ampliato
+        valid_exts = ['.py', '.c', '.cpp', '.js', '.log', '.json', '.nmap', '.txt']
+        
         for f_path in files:
-            if f_path.is_file() and f_path.suffix in ['.py', '.c', '.cpp', '.js']:
+            if f_path.is_file() and f_path.suffix in valid_exts:
                 with open(f_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    workspace_data[f_path.name] = f.read()
+                    workspace_data[f_path] = f.read()
 
-        if not workspace_data: return "Nessun codice trovato.", []
-        full_context = "\n".join([f"--- FILE: {n} ---\n{c}" for n, c in workspace_data.items()])
+        if not workspace_data: return "Nessun dato rilevante trovato.", []
 
-        concept = (self.concept_prompt | self.llm | StrOutputParser()).invoke({"code": full_context[:8000]})
-        print(f"🎯 Concetto tecnico estratto: {concept[:100]}...")
+        # Elaborazione differenziata
+        for f_path, content in workspace_data.items():
+            input_type = self._detect_input_type(f_path)
+            print(f"🚀 Analisi tipo: {input_type} per il file {f_path.name}")
 
-        print("🔎 Ricerca semantica nel grafo...")
-        results = []
-        results.extend(self.vector_tech.similarity_search(concept, k=2))
-        results.extend(self.vector_weak.similarity_search(concept, k=3))
-        results.extend(self.vector_vuln.similarity_search(concept, k=2))
-        results.extend(self.vector_expl.similarity_search(concept, k=2))
-        
-        entities = [{'id': d.metadata['graph_id'], 'label': d.metadata['label']} for d in results]
-        
-        graph_data = self._get_compliance_context(entities)
-        report = (self.report_prompt | self.llm | StrOutputParser()).invoke({
-            "context": graph_data, 
-            "concept": concept
-        })
-        return report, entities
+            # Estrazione del concetto (Pattern)
+            concept = (self.extraction_prompt | self.llm | StrOutputParser()).invoke({"content": content[:8000]})
+            print(f"🎯 Pattern estratto: {concept[:100]}...")
+
+            # STRATEGIA DI RICERCA IBRIDA DIFFERENZIATA
+            results = []
+            if input_type == "LOG":
+                # Nei log cerchiamo prima i PATTERN (CAPEC) e le TECNICHE (MITRE)
+                results.extend(self.vector_patt.similarity_search(concept, k=4))
+                results.extend(self.vector_tech.similarity_search(concept, k=2))
+            elif input_type == "SCAN":
+                # Nelle scansioni cerchiamo CVE (Vulnerability) ed EXPLOIT
+                results.extend(self.vector_vuln.similarity_search(concept, k=4))
+                results.extend(self.vector_expl.similarity_search(concept, k=2))
+            else:
+                # Codice statico: focus su CWE (Weakness)
+                results.extend(self.vector_weak.similarity_search(concept, k=4))
+                results.extend(self.vector_vuln.similarity_search(concept, k=2))
+
+            entities = [{'id': d.metadata['graph_id'], 'label': d.metadata['label']} for d in results]
+            
+            graph_data = self._get_compliance_context(entities)
+            report = (self.report_prompt | self.llm | StrOutputParser()).invoke({
+                "context": graph_data, 
+                "concept": concept
+            })
+            
+            return report, entities
 
     def close(self):
         self.driver.close()
