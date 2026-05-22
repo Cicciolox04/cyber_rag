@@ -23,8 +23,7 @@ class HybridRAGAnalystAgent:
         self.extraction_prompt = ChatPromptTemplate.from_messages([
             ("system", """Sei un esperto SOC Analyst e Security Researcher. 
             Analizza l'input (Codice, Log o Scansione) ed estrai il 'Security Pattern' principale.
-            
-            Genera poche parole chiave che rappresentano il PATTERN RILEVATO.
+            Devi restituire UNICAMENTE una lista di parole chiave separate da virgola, senza alcun preambolo, commento o frase di cortesia (NO "Ecco l'analisi", NO "Fascinating scan").
 
             - Se è CODICE: identifica la vulnerabilità (es. Buffer Overflow).
             - Se è un LOG: identifica l'attacco in corso (es. Password Spraying).
@@ -118,7 +117,7 @@ class HybridRAGAnalystAgent:
         files = list(path.rglob('*')) if path.is_dir() else [path]
         
         # Filtro estensioni ampliato
-        valid_exts = ['.py', '.c', '.cpp', '.js', '.log', '.json', '.nmap', '.txt']
+        valid_exts = ['.py', '.c', '.cpp', '.js', '.go', '.log', '.csv', '.json', '.nmap', '.txt', '.xml']
         
         for f_path in files:
             if f_path.is_file() and f_path.suffix in valid_exts:
@@ -168,7 +167,7 @@ if __name__ == "__main__":
     analyst = HybridRAGAnalystAgent("bolt://10.0.2.2:7687", "neo4j", "ciaociao", "http://10.0.2.2:11434")
     try:
         # Percorso del file da testare (es. hardcoded_creds.py)
-        report, found = analyst.analyze_content("../testing/vulnerable.c")
+        report, found = analyst.analyze_content("../testing/scansione_thm.nmap")
         print("\n" + "═"*30 + " REPORT DI ANALISI IBRIDA " + "═"*30)
         print(report)
         print("═"*86)

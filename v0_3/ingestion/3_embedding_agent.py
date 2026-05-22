@@ -25,15 +25,37 @@ class VectorialistAgent:
             # Clausola opzionale per limitare il numero di nodi da processare
             limit_clause = f"LIMIT {limit}" if limit else ""
             
-            # Recuperiamo i nodi che hanno una descrizione ma non ancora un embedding
+            # Query definitiva con ordinamento prioritario per la tesi
             query = f"""
             MATCH (n:{label}) 
             WHERE n.embedding IS NULL AND n.description IS NOT NULL 
+            
+            // Filtro sugli anni utili per i tuoi laboratori THM
+            AND (
+                NOT '{label}' = 'Vulnerability' 
+                OR n.id STARTS WITH 'CVE-2017' 
+                OR n.id STARTS WITH 'CVE-2019'
+                OR n.id STARTS WITH 'CVE-2021' 
+                OR n.id STARTS WITH 'CVE-2024'
+                OR n.id STARTS WITH 'CVE-2025'
+            )
+            
             RETURN n.id as id, 
                    n.name as name, 
                    n.description as desc,
                    n.platform as platform,
                    n.type as type
+            
+            // FORZIAMO LA PRECEDENZA ASSOLUTA PER LE TUE MACCHINE DI TEST
+            ORDER BY 
+              CASE 
+                WHEN n.id = 'CVE-2017-0144' THEN 0  // EternalBlue (Stanza Blue)
+                WHEN n.id = 'CVE-2019-9053' THEN 0  // SQLi (Stanza Kenobi)
+                WHEN n.id STARTS WITH 'CVE-2017' THEN 1
+                WHEN n.id STARTS WITH 'CVE-2019' THEN 1
+                WHEN n.id STARTS WITH 'CVE-2021' THEN 2
+                ELSE 3 
+              END ASC
             {limit_clause}
             """
             
@@ -49,7 +71,7 @@ class VectorialistAgent:
                     if label == "Pattern":
                         # Per le CAPEC includiamo il nome e la descrizione per catturare il comportamento
                         safe_text = f"Attack Pattern: {node.get('name', '')}. Description: {node['desc'][:1200]}"
-                    if label == "Exploit":
+                    elif label == "Exploit":
                         safe_text = f"Exploit: {node['desc']}. Platform: {node.get('platform', 'N/A')}. Type: {node.get('type', 'N/A')}"
                     elif label == "Vulnerability":
                         safe_text = f"Vulnerability {node['id']}: {node['desc'][:1200]}"
@@ -97,8 +119,8 @@ if __name__ == "__main__":
     agent = VectorialistAgent(URI, "neo4j", "ciaociao", OLLAMA_URL)
     try:
         # Applichiamo un limite didattico alle etichette più popolose
-        agent.generate_embeddings("Vulnerability", force_update=False, limit=5000)
-        agent.generate_embeddings("Exploit", force_update=False, limit=5000)
+        agent.generate_embeddings("Vulnerability", force_update=False, limit=1000)
+        agent.generate_embeddings("Exploit", force_update=False, limit=1000)
         
         # Per Technique e Weakness possiamo indicizzare tutto (volumi ridotti)
         agent.generate_embeddings("Technique", force_update=False)
