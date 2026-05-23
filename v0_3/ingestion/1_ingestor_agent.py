@@ -49,10 +49,10 @@ class KnowledgeIngestorAgent:
         all_files = glob.glob(os.path.join(abs_path, "CVE-*.json"))
         
         # Filtro: teniamo solo i file che contengono gli anni 2023, 2024, 2025 o 2026 nel nome
-        target_years = ["2017", "2024", "2025", "2021"]
+        target_years = ["2017", "2019", "2024", "2025", "2021"]
         files = [f for f in all_files if any(year in os.path.basename(f) for year in target_years)]
         
-        print(f"🚀 Espansione Knowledge Base (Target: 2017, 2021, 2024, 2025) da: {abs_path}")
+        print(f"🚀 Espansione Knowledge Base (Target: 2017, 2019, 2021, 2024, 2025) da: {abs_path}")
         print(f"📂 File pronti per l'ingestione: {[os.path.basename(f) for f in files]}")
 
         with self.driver.session() as session:
