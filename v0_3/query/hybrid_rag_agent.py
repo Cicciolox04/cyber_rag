@@ -188,7 +188,7 @@ if __name__ == "__main__":
     analyst = HybridRAGAnalystAgent("bolt://10.0.2.2:7687", "neo4j", "ciaociao", "http://10.0.2.2:11434")
     try:
         # Passiamo la scansione per la macchina BLUE
-        report, found = analyst.analyze_content("../testing/scansione_thm.nmap")
+        report, found = analyst.analyze_content("../testing/poc/simple_ctf.log")
         print("\n" + "═"*30 + " REPORT DI ANALISI IBRIDA " + "═"*30)
         print(report)
         print("═"*86)
