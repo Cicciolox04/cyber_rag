@@ -15,66 +15,62 @@ class HybridRAGAnalystAgent:
     def __init__(self, uri, user, password, ollama_url):
         self.auth = (user, password)
         self.neo4j_url = uri
-        # Utilizziamo lo stesso modello di embedding usato per l'indicizzazione
+        
+        # Modelli locali Ollama
         self.embeddings = OllamaEmbeddings(model="mxbai-embed-large", base_url=ollama_url)
         self.llm = ChatOllama(model="llama3", temperature=0, base_url=ollama_url)
         
-        # PROMPT EVOLUTO: Ora estrae pattern indipendentemente dall'input
+        # PROMPT 1: Estrazione pattern puro
         self.extraction_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Sei un esperto SOC Analyst e Security Researcher. 
-            Analizza l'input (Codice, Log o Scansione) ed estrai il 'Security Pattern' principale.
-            Devi restituire UNICAMENTE una lista di parole chiave separate da virgola, senza alcun preambolo, commento o frase di cortesia (NO "Ecco l'analisi", NO "Fascinating scan").
-
-            - Se è CODICE: identifica la vulnerabilità (es. Buffer Overflow).
-            - Se è un LOG: identifica l'attacco in corso (es. Password Spraying).
-            - Se è una SCANSIONE: identifica il servizio vulnerabile o la CVE (es. Apache RCE)."""),
+            ("system", """Sei un SOC Analyst e Security Researcher. 
+            Analizza l'input ed estrai il 'Security Pattern' principale.
+            Restituisci UNICAMENTE una lista di parole chiave separate da virgola, senza alcun preambolo.
+            - CODICE: identifica la vulnerabilità (es. Buffer Overflow).
+            - LOG: identifica l'attacco in corso (es. Password Spraying).
+            - SCANSIONE: identifica il servizio vulnerabile (es. Apache RCE)."""),
             ("user", "INPUT DA ANALIZZARE:\n{content}")
         ])
 
+        # PROMPT 2: Generazione Report GraphRAG (Anti-Allucinazione)
         self.report_prompt = ChatPromptTemplate.from_messages([
             ("system", """Sei un Senior Security Architect. Genera un report professionale in ITALIANO.
             Usa OBBLIGATORIAMENTE questi tag:
 
             [ANALISI]
-            (Descrivi cosa è stato rilevato: vulnerabilità nel codice, attacco nei log o falla nella rete)
+            (Descrivi cosa è stato rilevato)
 
             [IDENTIFICATIVI]
-            (Elenca CVE, CWE, CAPEC e Tecniche MITRE correlate)
+            (Elenca le CVE trovate nel contesto. Per ciascuna CVE, DEVI estrarre e trascrivere la CWE e i Pattern CAPEC associati riportati nel 'CONTESTO DAL GRAFO'. 
+            ⚠️ REGOLA FERREA: NON INVENTARE O IPOTIZZARE LE CWE. Usa solo ed esclusivamente i dati strutturati forniti alla voce 'DEBOLEZZA REALE' o 'PATTERN CAPEC'.)
 
             [KILL CHAIN]
-            (Ipotizza quali saranno le prossime mosse dell'attaccante: come verrà sfruttata la vulnerabilità trovata?)
+            (Ipotizza le prossime mosse dell'attaccante in base alle Tecniche MITRE fornite)
 
             [STANDARD]
-            (Cita le norme NIST 800-53 o ISO 27001 violate)
+            (Cita le norme NIST/ISO violate, riportate alla voce 'NORMATIVE VIOLATE')
 
             [MITIGAZIONE]
-            (Suggerisci correzioni al codice o modifiche alla configurazione di rete/firewall)"""),
-            ("user", "CONTESTO DAL GRAFO:\n{context}\n\nPATTERN RILEVATO:\n{concept}")
+            (Suggerisci correzioni in base alla causa radice)"""),
+            ("user", "CONTESTO DAL GRAFO:\n{context}\n\nPATTERN RILEVATO (Ricerca Vettoriale):\n{concept}")
         ])
 
-        # Inizializzazione dei magazzini vettoriali con protezione per descrizioni lunghe
+        # Inizializzazione Indici Vettoriali
         self.vector_tech = self._init_vs("technique_vector_index", "Technique")
         self.vector_weak = self._init_vs("weakness_vector_index", "Weakness")
         self.vector_vuln = self._init_vs("vulnerability_vector_index", "Vulnerability")
         self.vector_expl = self._init_vs("exploit_vector_index", "Exploit")
-        
-        # AGGIUNTA: Pattern Index per i Log
         self.vector_patt = self._init_vs("pattern_vector_index", "Pattern")
         
         self.driver = GraphDatabase.driver(uri, auth=self.auth)
 
     def _init_vs(self, index_name, label):
-        """
-        Versione ottimizzata: usa ID come testo base e ripristina i metadati 
-        necessari per evitare KeyError.
-        """
+        """Usa ID come testo base e ripristina i metadati per il passaggio al grafo."""
         return Neo4jVector.from_existing_index(
             embedding=self.embeddings,
             url=self.neo4j_url,
             username=self.auth[0],
             password=self.auth[1],
             index_name=index_name,
-            # Passiamo la retrieval query per mantenere la tua struttura di metadati custom
             retrieval_query=f"""
                 RETURN node.id AS text, 
                        score, 
@@ -83,25 +79,57 @@ class HybridRAGAnalystAgent:
         )
 
     def _get_compliance_context(self, entities):
-        """Attraversa il grafo per trovare i percorsi dai dati tecnici alla compliance."""
+        """Graph Traversal Universale: Da qualsiasi nodo (CVE, CWE, Pattern), estrae la Kill Chain completa."""
         context = []
         with self.driver.session() as session:
             for ent in entities:
-                # Navigazione fino a 3 salti (CVE -> CWE -> Requirement)
                 query = """
                 MATCH (n) WHERE n.id = $id
-                OPTIONAL MATCH (n)-[:INSTANCE_OF|EXPLOITS_VULNERABILITY|DIRECTLY_THREATENS|VIOLATES|HAS_WEAKNESS*1..3]->(r:Requirement)
-                RETURN n.id as id, n.name as name, labels(n)[0] as type, n.description as desc, n.file_path as path,
+                
+                // 1. ANCORAGGIO ALLA CAUSA RADICE (CWE)
+                // Trova la Weakness indipendentemente dal tipo di nodo d'ingresso
+                OPTIONAL MATCH (n:Vulnerability)-[:HAS_WEAKNESS]->(w1:Weakness)
+                OPTIONAL MATCH (n:Pattern)-[:EXPLOITS]->(w2:Weakness)
+                OPTIONAL MATCH (n:Technique)-[:MAPS_TO_PATTERN]->(:Pattern)-[:EXPLOITS]->(w3:Weakness)
+                
+                // Consolidiamo la target_weakness (se n è già una Weakness, usa se stesso)
+                WITH n, CASE WHEN 'Weakness' IN labels(n) THEN n ELSE coalesce(w1, w2, w3) END as w
+                
+                // 2. ESPANSIONE DELLA KILL CHAIN E COMPLIANCE
+                OPTIONAL MATCH (w)-[:VIOLATES]->(r:Requirement)
+                OPTIONAL MATCH (p:Pattern)-[:EXPLOITS]->(w)
+                OPTIONAL MATCH (t:Technique)-[:MAPS_TO_PATTERN]->(p)
+                OPTIONAL MATCH (e:Exploit)-[:EXPLOITS_VULNERABILITY]->(n)
+                
+                RETURN n.id as entry_id, 
+                       labels(n)[0] as entry_type,
+                       n.description as entry_desc,
+                       w.id + ' - ' + w.name as weakness,
+                       collect(DISTINCT p.id + ' - ' + p.name) as attack_patterns,
+                       collect(DISTINCT t.id + ' - ' + t.name) as mitre_techniques,
+                       collect(DISTINCT e.id + ' (' + e.name + ')') as exploits,
                        collect(DISTINCT r.standard + ' ' + r.section + ': ' + r.name) as compliance
                 """
                 res = session.run(query, id=ent['id']).single()
+                
                 if res:
-                    comp = ", ".join(res['compliance']) if res['compliance'] else "Nessun requisito mappato direttamente"
-                    name_str = res['name'] if res['name'] else "N/A"
-                    path_info = f"\nFILE EXPLOIT: {res['path']}" if res.get('path') else ""
-                    context.append(f"🔍 [{res['type']}] {res['id']} ({name_str})\nDEF: {res['desc'][:500]}{path_info}\nNORME: {comp}")
+                    # Formattazione liste pulite
+                    clean_compliance = [c for c in res['compliance'] if c and not c.startswith('None')]
+                    comp_str = ", ".join(clean_compliance) if clean_compliance else "Nessuna normativa mappata direttamente."
+                    
+                    # Costruzione blocco di testo rigido per Llama3
+                    block = f"=== ENTRATA GRAFO: [{res['entry_type']}] {res['entry_id']} ===\n"
+                    block += f"DESCRIZIONE: {res['entry_desc'][:500]}...\n"
+                    
+                    if res['weakness']: block += f"🛡️ DEBOLEZZA REALE (Grafo): {res['weakness']}\n"
+                    if res['attack_patterns']: block += f"🥷 PATTERN CAPEC (Grafo): {', '.join(res['attack_patterns'])}\n"
+                    if res['mitre_techniques']: block += f"📊 TECNICHE MITRE (Grafo): {', '.join(res['mitre_techniques'])}\n"
+                    if res['exploits']: block += f"💥 EXPLOIT DISPONIBILI: {', '.join(res['exploits'])}\n"
+                    
+                    block += f"📋 NORMATIVE VIOLATE: {comp_str}"
+                    context.append(block)
+                    
         return "\n\n".join(context)
-
 
     def _detect_input_type(self, file_path):
         """Determina il tipo di analisi in base all'estensione."""
@@ -116,7 +144,6 @@ class HybridRAGAnalystAgent:
         workspace_data = {}
         files = list(path.rglob('*')) if path.is_dir() else [path]
         
-        # Filtro estensioni ampliato
         valid_exts = ['.py', '.c', '.cpp', '.js', '.go', '.log', '.csv', '.json', '.nmap', '.txt', '.xml']
         
         for f_path in files:
@@ -126,27 +153,21 @@ class HybridRAGAnalystAgent:
 
         if not workspace_data: return "Nessun dato rilevante trovato.", []
 
-        # Elaborazione differenziata
         for f_path, content in workspace_data.items():
             input_type = self._detect_input_type(f_path)
             print(f"🚀 Analisi tipo: {input_type} per il file {f_path.name}")
 
-            # Estrazione del concetto (Pattern)
             concept = (self.extraction_prompt | self.llm | StrOutputParser()).invoke({"content": content[:8000]})
             print(f"🎯 Pattern estratto: {concept[:100]}...")
 
-            # STRATEGIA DI RICERCA IBRIDA DIFFERENZIATA
             results = []
             if input_type == "LOG":
-                # Nei log cerchiamo prima i PATTERN (CAPEC) e le TECNICHE (MITRE)
                 results.extend(self.vector_patt.similarity_search(concept, k=4))
                 results.extend(self.vector_tech.similarity_search(concept, k=2))
             elif input_type == "SCAN":
-                # Nelle scansioni cerchiamo CVE (Vulnerability) ed EXPLOIT
                 results.extend(self.vector_vuln.similarity_search(concept, k=4))
                 results.extend(self.vector_expl.similarity_search(concept, k=2))
             else:
-                # Codice statico: focus su CWE (Weakness)
                 results.extend(self.vector_weak.similarity_search(concept, k=4))
                 results.extend(self.vector_vuln.similarity_search(concept, k=2))
 
@@ -166,7 +187,7 @@ class HybridRAGAnalystAgent:
 if __name__ == "__main__":
     analyst = HybridRAGAnalystAgent("bolt://10.0.2.2:7687", "neo4j", "ciaociao", "http://10.0.2.2:11434")
     try:
-        # Percorso del file da testare (es. hardcoded_creds.py)
+        # Passiamo la scansione per la macchina BLUE
         report, found = analyst.analyze_content("../testing/scansione_thm.nmap")
         print("\n" + "═"*30 + " REPORT DI ANALISI IBRIDA " + "═"*30)
         print(report)

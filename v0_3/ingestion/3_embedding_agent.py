@@ -50,9 +50,9 @@ class VectorialistAgent:
             ORDER BY 
               CASE 
                 WHEN n.id = 'CVE-2017-0144' THEN 0  // EternalBlue (Stanza Blue)
-                WHEN n.id = 'CVE-2019-9053' THEN 0  // SQLi (Stanza Kenobi)
+                WHEN n.id = 'CVE-2019-9053' THEN 0  // SQLi Simple-CTF
+                WHEN n.id = 'CVE-2024-1709' THEN 0  // ScreenConnect (Scenario Moderno)
                 WHEN n.id STARTS WITH 'CVE-2017' THEN 1
-                WHEN n.id STARTS WITH 'CVE-2019' THEN 1
                 WHEN n.id STARTS WITH 'CVE-2021' THEN 2
                 ELSE 3 
               END ASC
@@ -99,7 +99,7 @@ class VectorialistAgent:
                 ("weakness_vector_index", "Weakness"),
                 ("vulnerability_vector_index", "Vulnerability"),
                 ("exploit_vector_index", "Exploit"),
-                ("pattern_vector_index", "Pattern") # NUOVO INDICE
+                ("pattern_vector_index", "Pattern")
             ]
             
             for index_name, label in indices:
