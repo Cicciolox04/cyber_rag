@@ -23,8 +23,8 @@ class HybridRAGAnalystAgent:
         # PROMPT 1: Estrazione pattern puro
         self.extraction_prompt = ChatPromptTemplate.from_messages([
             ("system", """Sei un SOC Analyst e Security Researcher. 
-            Analizza l'input ed estrai il 'Security Pattern' principale.
-            Restituisci UNICAMENTE una lista di parole chiave separate da virgola, senza alcun preambolo.
+            Analizza l'input e NON fare osservazioni iniziali.
+            Restituisci solo una riga contenente i concetti fondamentali separati da una virgola.
             - CODICE: identifica la vulnerabilità (es. Buffer Overflow).
             - LOG: identifica l'attacco in corso (es. Password Spraying).
             - SCANSIONE: identifica il servizio vulnerabile (es. Apache RCE)."""),
@@ -32,25 +32,32 @@ class HybridRAGAnalystAgent:
         ])
 
         # PROMPT 2: Generazione Report GraphRAG (Anti-Allucinazione)
+        # PROMPT 2: Generazione Report GraphRAG (Anti-Allucinazione)
         self.report_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Sei un Senior Security Architect. Genera un report professionale in ITALIANO.
-            Usa OBBLIGATORIAMENTE questi tag:
+            ("system", """Sei un SOC Analyst e Senior Security Architect spietatamente analitico. Il tuo compito è redigere un report tecnico, diretto e privo di convenevoli.
+            
+            ⚠️ REGOLE ZERO-HALLUCINATION (DA RISPETTARE ASSOLUTAMENTE):
+            1. VIETATO usare frasi generiche, discorsive o riempitive come "Il presente report analizza...", "È importante aggiornare i sistemi" o "Le seguenti CVE sono state rilevate". Vai dritto ai dati tecnici.
+            2. Usa SOLO ed ESCLUSIVAMENTE i dati presenti in "CONTESTO DAL GRAFO" e "PATTERN RILEVATO". Se un dato non c'è, non inventarlo.
+            
+            Usa OBBLIGATORIAMENTE i seguenti tag esatti per strutturare la risposta:
 
             [ANALISI]
-            (Descrivi cosa è stato rilevato)
+            Riassumi in massimo 3 righe il vettore di attacco o il rischio rilevato, basandoti ESCLUSIVAMENTE sul "PATTERN RILEVATO" (es. cita protocolli esatti come Windows RPC o SMBv2).
 
             [IDENTIFICATIVI]
-            (Elenca le CVE trovate nel contesto. Per ciascuna CVE, DEVI estrarre e trascrivere la CWE e i Pattern CAPEC associati riportati nel 'CONTESTO DAL GRAFO'. 
-            ⚠️ REGOLA FERREA: NON INVENTARE O IPOTIZZARE LE CWE. Usa solo ed esclusivamente i dati strutturati forniti alla voce 'DEBOLEZZA REALE' o 'PATTERN CAPEC'.)
+            Elenca le CVE trovate nel contesto. Per ciascuna, estrai la CWE e i Pattern CAPEC associati. 
+            ⚠️ REGOLA FERREA: NON INVENTARE O IPOTIZZARE LE CWE. Usa solo i dati forniti alla voce 'DEBOLEZZA REALE' o 'PATTERN CAPEC'. Se non ci sono, scrivi "Nessuna vulnerabilità strutturata nel grafo."
 
             [KILL CHAIN]
-            (Ipotizza le prossime mosse dell'attaccante in base alle Tecniche MITRE fornite)
+            Elenca le tecniche di attacco basandoti SOLO ed ESCLUSIVAMENTE sulla voce "TECNICHE MITRE (Grafo)". VIETATO ipotizzare fasi teoriche generali (come "creazione exploit" o "iniezione"). Se il grafo non fornisce tecniche MITRE, scrivi rigorosamente: "Nessuna tattica MITRE mappata nel grafo per questo contesto."
 
             [STANDARD]
-            (Cita le norme NIST/ISO violate, riportate alla voce 'NORMATIVE VIOLATE')
+            Cita le norme NIST/ISO violate riportate alla voce 'NORMATIVE VIOLATE'. Pulisci la formattazione: rimuovi i simboli strani (come '|||' o '|||||') e restituisci un elenco puntato pulito ed elegante.
 
             [MITIGAZIONE]
-            (Suggerisci correzioni in base alla causa radice)"""),
+            Fornisci contromisure specifiche per le esatte vulnerabilità (CWE/CVE) individuate. Esempio: se rilevi anomalie SMB, suggerisci la disabilitazione di SMBv1 o il patching del servizio specifico. VIETATO scrivere "aggiornare i sistemi" senza specificare la causa radice del problema."""),
+            
             ("user", "CONTESTO DAL GRAFO:\n{context}\n\nPATTERN RILEVATO (Ricerca Vettoriale):\n{concept}")
         ])
 
@@ -153,33 +160,52 @@ class HybridRAGAnalystAgent:
 
         if not workspace_data: return "Nessun dato rilevante trovato.", []
 
-        for f_path, content in workspace_data.items():
-            input_type = self._detect_input_type(f_path)
-            print(f"🚀 Analisi tipo: {input_type} per il file {f_path.name}")
+        # Estraiamo il contenuto dell'unico file caricato
+        # (Modifica consigliata per supportare la UI attuale 1 a 1)
+        f_path, content = list(workspace_data.items())[0]
+        
+        input_type = self._detect_input_type(f_path)
+        print(f"🚀 Analisi tipo: {input_type} per il file {f_path.name}")
 
-            concept = (self.extraction_prompt | self.llm | StrOutputParser()).invoke({"content": content[:8000]})
-            print(f"🎯 Pattern estratto: {concept[:100]}...")
+        concept = (self.extraction_prompt | self.llm | StrOutputParser()).invoke({"content": content[:8000]})
+        print(f"🎯 Pattern estratto: {concept[:1000]}...")
 
-            results = []
-            if input_type == "LOG":
-                results.extend(self.vector_patt.similarity_search(concept, k=4))
-                results.extend(self.vector_tech.similarity_search(concept, k=2))
-            elif input_type == "SCAN":
-                results.extend(self.vector_vuln.similarity_search(concept, k=4))
-                results.extend(self.vector_expl.similarity_search(concept, k=2))
-            else:
-                results.extend(self.vector_weak.similarity_search(concept, k=4))
-                results.extend(self.vector_vuln.similarity_search(concept, k=2))
+        # --- AGGIUNTA LOG ---
+        print("🔍 Ricerca nel database vettoriale in corso...")
+        # --------------------
 
-            entities = [{'id': d.metadata['graph_id'], 'label': d.metadata['label']} for d in results]
-            
-            graph_data = self._get_compliance_context(entities)
-            report = (self.report_prompt | self.llm | StrOutputParser()).invoke({
-                "context": graph_data, 
-                "concept": concept
-            })
-            
-            return report, entities
+        results = []
+        if input_type == "LOG":
+            results.extend(self.vector_patt.similarity_search(concept, k=4))
+            results.extend(self.vector_tech.similarity_search(concept, k=2))
+        elif input_type == "SCAN":
+            results.extend(self.vector_vuln.similarity_search(concept, k=4))
+            results.extend(self.vector_expl.similarity_search(concept, k=2))
+        else:
+            results.extend(self.vector_weak.similarity_search(concept, k=4))
+            results.extend(self.vector_vuln.similarity_search(concept, k=2))
+
+        entities = [{'id': d.metadata['graph_id'], 'label': d.metadata['label']} for d in results]
+        
+        # --- AGGIUNTA LOG ---
+        print(f"🔗 Trovate {len(entities)} entità. Interrogazione del Grafo Neo4j...")
+        # --------------------
+
+        graph_data = self._get_compliance_context(entities)
+        
+        # --- AGGIUNTA LOG ---
+        print("🧠 Llama3 sta generando il report finale. (Potrebbe volerci un po', preparati ad aspettare! ⏳)...")
+        # --------------------
+        
+        report = (self.report_prompt | self.llm | StrOutputParser()).invoke({
+            "context": graph_data, 
+            "concept": concept
+        })
+
+        
+        # Ora il return è sicuro!
+        print("✅ Report generato con successo! Ritorno alla UI.")
+        return report, entities
 
     def close(self):
         self.driver.close()
