@@ -29,5 +29,11 @@ Ollama deve essere configurato per accettare connessioni dall'esterno (dalla VM)
   ollama pull llama3
   ollama pull mxbai-embed-large
 
-### 2. Configurazione Neo4j
+### 2. Configurazione Neo4j Borwser Desktop
+* Scaricare ed installare Neo4j Browser Desktop dal browser (https://neo4j.com/download)
+* Creare una istanza e modificare il file neo4j.config decommentando o aggiungendo queste sezioni:
+  ```bash
+  server.default_listen_address=0.0.0.0
+  server.bolt.listen_address=0.0.0.0:7687
+  server.http.listen_address=0.0.0.0:7474
 
