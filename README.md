@@ -1,4 +1,4 @@
-# 🛡️ Graph RAG per Cyber Threat Intelligence (SOC Tier 1 AI Agent)
+# 🛡️ Graph RAG per Cyber Threat Intelligence
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![Neo4j](https://img.shields.io/badge/Neo4j-Graph_Database-blue)
