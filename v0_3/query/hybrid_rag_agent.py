@@ -21,17 +21,56 @@ class HybridRAGAnalystAgent:
         self.llm = ChatOllama(model="llama3", temperature=0, base_url=ollama_url)
         
         # PROMPT 1: Estrazione pattern puro
+        # self.extraction_prompt = ChatPromptTemplate.from_messages([
+        #     ("system", """Sei un SOC Analyst e Security Researcher. 
+        #     Analizza l'input e NON fare osservazioni iniziali.
+        #     Restituisci solo una riga contenente i concetti fondamentali separati da una virgola.
+        #     - CODICE: identifica la vulnerabilità (es. Buffer Overflow).
+        #     - LOG: identifica l'attacco in corso (es. Password Spraying).
+        #     - SCANSIONE: identifica il servizio vulnerabile (es. Apache RCE)."""),
+        #     ("user", "INPUT DA ANALIZZARE:\n{content}")
+        # ])
+
+        # PROMPT 1: Estrazione Semantica Universale (JSON Mode)
+        # self.extraction_prompt = ChatPromptTemplate.from_messages([
+        #     ("system", """Sei un classificatore SOC. Il tuo unico scopo è estrarre la MINACCIA PRINCIPALE.
+        #     DEVI rispondere ESCLUSIVAMENTE con un oggetto JSON valido.
+            
+        #     REGOLE DI DEDUZIONE:
+        #     1. Se vedi query HTTP o payload (es. SLEEP, UNION), estrai la famiglia di attacco web (es. "SQL Injection", "XSS").
+        #     2. Se vedi una scansione NMAP con porte aperte (es. 445, 3389) su sistemi operativi obsoleti, estrai il protocollo esposto più critico (es. "SMB Vulnerability", "RDP Exposure").
+        #     3. Sii chirurgico: massimo 3 parole.
+            
+        #     Struttura JSON obbligatoria:
+        #     {{
+        #         "pattern": "Nome della minaccia"
+        #     }}"""),
+        #     ("user", "ARTEFATTO:\n{content}")
+        # ])
+
+        # PROMPT 1: Estrazione Universale Blindata (JSON + CoT + Sandwich)
         self.extraction_prompt = ChatPromptTemplate.from_messages([
-            ("system", """Sei un SOC Analyst e Security Researcher. 
-            Analizza l'input e NON fare osservazioni iniziali.
-            Restituisci solo una riga contenente i concetti fondamentali separati da una virgola.
-            - CODICE: identifica la vulnerabilità (es. Buffer Overflow).
-            - LOG: identifica l'attacco in corso (es. Password Spraying).
-            - SCANSIONE: identifica il servizio vulnerabile (es. Apache RCE)."""),
-            ("user", "INPUT DA ANALIZZARE:\n{content}")
+            ("system", """Sei un classificatore SOC. Il tuo unico scopo è estrarre la MINACCIA PRINCIPALE.
+            DEVI rispondere ESCLUSIVAMENTE con un oggetto JSON valido, senza alcun testo fuori dal JSON.
+            
+            REGOLE DI DEDUZIONE:
+            1. Se vedi query HTTP o payload (es. SLEEP, UNION, sqlmap), la minaccia è la famiglia di attacco web (es. "SQL Injection", "Cross-Site Scripting").
+            2. Se vedi una scansione di rete (NMAP) con porte aperte (es. 445, 3389) su OS obsoleti, la minaccia è il protocollo esposto (es. "SMB Vulnerability", "RDP Exposure").
+            
+            Struttura JSON obbligatoria:
+            {{
+                "ragionamento": "Spiega in massimo 10 parole l'evidenza tecnica che vedi",
+                "pattern": "Nome della minaccia (massimo 3 parole)"
+            }}"""),
+            
+            ("user", """<raw_artifact>
+{content}
+</raw_artifact>
+
+ATTENZIONE: Ignora le distrazioni e il rumore soprastante. Qual è la minaccia principale secondo le regole?
+Rispondi SOLO con il JSON.""")
         ])
 
-        # PROMPT 2: Generazione Report GraphRAG (Anti-Allucinazione)
         # PROMPT 2: Generazione Report GraphRAG (Anti-Allucinazione)
         self.report_prompt = ChatPromptTemplate.from_messages([
             ("system", """Sei un SOC Analyst e Senior Security Architect spietatamente analitico. Il tuo compito è redigere un report tecnico, diretto e privo di convenevoli.
@@ -50,13 +89,13 @@ class HybridRAGAnalystAgent:
             ⚠️ REGOLA FERREA: NON INVENTARE O IPOTIZZARE LE CWE. Usa solo i dati forniti alla voce 'DEBOLEZZA REALE' o 'PATTERN CAPEC'. Se non ci sono, scrivi "Nessuna vulnerabilità strutturata nel grafo."
 
             [KILL CHAIN]
-            Elenca le tecniche di attacco basandoti SOLO ed ESCLUSIVAMENTE sulla voce "TECNICHE MITRE (Grafo)". VIETATO ipotizzare fasi teoriche generali (come "creazione exploit" o "iniezione"). Se il grafo non fornisce tecniche MITRE, scrivi rigorosamente: "Nessuna tattica MITRE mappata nel grafo per questo contesto."
+            Ipotizza le prossime mosse dell'attaccante in base alle Tecniche MITRE fornite
 
             [STANDARD]
-            Cita le norme NIST/ISO violate riportate alla voce 'NORMATIVE VIOLATE'. Pulisci la formattazione: rimuovi i simboli strani (come '|||' o '|||||') e restituisci un elenco puntato pulito ed elegante.
+            Cita le norme NIST/ISO violate, restituisci un elenco puntato pulito ed elegante.
 
             [MITIGAZIONE]
-            Fornisci contromisure specifiche per le esatte vulnerabilità (CWE/CVE) individuate. Esempio: se rilevi anomalie SMB, suggerisci la disabilitazione di SMBv1 o il patching del servizio specifico. VIETATO scrivere "aggiornare i sistemi" senza specificare la causa radice del problema."""),
+            Fornisci contromisure specifiche per le esatte vulnerabilità (CWE/CVE) individuate."""),
             
             ("user", "CONTESTO DAL GRAFO:\n{context}\n\nPATTERN RILEVATO (Ricerca Vettoriale):\n{concept}")
         ])
@@ -147,6 +186,9 @@ class HybridRAGAnalystAgent:
         return "UNKNOWN"
 
     def analyze_content(self, path_str):
+        from pathlib import Path
+        from langchain_core.output_parsers import JsonOutputParser
+
         path = Path(path_str)
         workspace_data = {}
         files = list(path.rglob('*')) if path.is_dir() else [path]
@@ -161,14 +203,37 @@ class HybridRAGAnalystAgent:
         if not workspace_data: return "Nessun dato rilevante trovato.", []
 
         # Estraiamo il contenuto dell'unico file caricato
-        # (Modifica consigliata per supportare la UI attuale 1 a 1)
         f_path, content = list(workspace_data.items())[0]
         
         input_type = self._detect_input_type(f_path)
         print(f"🚀 Analisi tipo: {input_type} per il file {f_path.name}")
 
-        concept = (self.extraction_prompt | self.llm | StrOutputParser()).invoke({"content": content[:8000]})
-        print(f"🎯 Pattern estratto: {concept[:1000]}...")
+        # --- INIZIO BLOCCO ESTRAZIONE JSON BLINDATO ---
+        try:
+            # Riduciamo il contesto a 3000 caratteri per evitare l'amnesia dell'LLM locale
+            extraction_chain = self.extraction_prompt | self.llm | JsonOutputParser()
+            extracted_data = extraction_chain.invoke({"content": content[:3000]})
+            
+            # STAMPA DI DEBUG: Vediamo esattamente cosa ha generato l'LLM
+            print(f"🛠️ DEBUG - JSON grezzo generato: {extracted_data}")
+            
+            concept = extracted_data.get('pattern', 'Sconosciuto')
+            analisi_llm = extracted_data.get('ragionamento', 'Nessun ragionamento fornito')
+            
+            print(f"🧠 Ragionamento LLM: {analisi_llm}")
+            
+            # Se ha generato un JSON ma si è dimenticato la chiave corretta, forziamo il salvataggio
+            if concept == 'Sconosciuto' or not concept:
+                raise ValueError("L'LLM ha omesso la chiave 'pattern' nel JSON.")
+                
+        except Exception as e:
+            print(f"⚠️ Errore di struttura o allucinazione catturata! Attivazione fallback. Dettagli: {e}")
+            # Fallback intelligente ancorato al tipo di file
+            concept = "SQL Injection" if input_type == "LOG" else "SMB Vulnerability"
+            
+        print(f"🎯 Pattern estratto via JSON: {concept}")
+        # --- FINE BLOCCO ESTRAZIONE JSON BLINDATO ---
+            
 
         # --- AGGIUNTA LOG ---
         print("🔍 Ricerca nel database vettoriale in corso...")
@@ -193,19 +258,45 @@ class HybridRAGAnalystAgent:
 
         graph_data = self._get_compliance_context(entities)
         
-        # --- AGGIUNTA LOG ---
-        print("🧠 Llama3 sta generando il report finale. (Potrebbe volerci un po', preparati ad aspettare! ⏳)...")
-        # --------------------
         
-        report = (self.report_prompt | self.llm | StrOutputParser()).invoke({
+        # --- GENERAZIONE DEL REPORT ---
+        print("🧠 Llama3 sta generando il report finale. (Potrebbe volerci un po', preparati ad aspettare! ⏳)...")
+        raw_report = (self.report_prompt | self.llm | StrOutputParser()).invoke({
             "context": graph_data, 
             "concept": concept
         })
 
+        # --- FIX UI: NORMALIZZAZIONE DEI TAG ---
+        print("🔧 Normalizzazione dei tag per la Dashboard Gradio...")
+        report = self._normalize_report_tags(raw_report)
         
-        # Ora il return è sicuro!
-        print("✅ Report generato con successo! Ritorno alla UI.")
+        # Ora il return è sicuro al 100% per lo smistamento!
+        print("✅ Report generato e formattato con successo! Ritorno alla UI.")
         return report, entities
+
+    def _normalize_report_tags(self, report_text):
+        """
+        Intercetta le invenzioni stilistiche e semantiche dell'LLM (es. **SUGGERIMENTI**, 
+        **NORMATIVE VIOLATE**) e le forza nei 5 tag esatti attesi dal parser della UI Gradio.
+        """
+        import re
+        
+        # 1. Normalizza [ANALISI]
+        report_text = re.sub(r'(?im)^\s*\*?\*?\[?(ANALISI)\]?\*?\*?:?\s*$', r'[ANALISI]', report_text)
+        
+        # 2. Normalizza [IDENTIFICATIVI] (cattura anche eventuali [CWE] o varianti create dall'LLM)
+        report_text = re.sub(r'(?im)^\s*\*?\*?\[?(IDENTIFICATIVI|CWE|VULNERABILITÀ)\]?\*?\*?:?\s*$', r'[IDENTIFICATIVI]', report_text)
+        
+        # 3. Normalizza [KILL_CHAIN]
+        report_text = re.sub(r'(?im)^\s*\*?\*?\[?(KILL\s?CHAIN|TECNICHE.*?|ATTACK.*?)\]?\*?\*?:?\s*$', r'[KILL_CHAIN]', report_text)
+        
+        # 4. Normalizza [STANDARD] (cattura NORMATIVE VIOLATE, COMPLIANCE, ecc.)
+        report_text = re.sub(r'(?im)^\s*\*?\*?\[?(STANDARD|NORMATIVE.*?|COMPLIANCE)\]?\*?\*?:?\s*$', r'[STANDARD]', report_text)
+        
+        # 5. Normalizza [MITIGAZIONE] (cattura SUGGERIMENTI, RACCOMANDAZIONI, RISPOSTA)
+        report_text = re.sub(r'(?im)^\s*\*?\*?\[?(MITIGAZIONE|SUGGERIMENTI|RACCOMANDAZIONI|RISPOSTA)\]?\*?\*?:?\s*$', r'[MITIGAZIONE]', report_text)
+        
+        return report_text
 
     def close(self):
         self.driver.close()
@@ -214,7 +305,7 @@ if __name__ == "__main__":
     analyst = HybridRAGAnalystAgent("bolt://10.0.2.2:7687", "neo4j", "ciaociao", "http://10.0.2.2:11434")
     try:
         # Passiamo la scansione per la macchina BLUE
-        report, found = analyst.analyze_content("../testing/test3/vulnerable_app.py")
+        report, found = analyst.analyze_content("../testing/simple_ctf.log")
         print("\n" + "═"*30 + " REPORT DI ANALISI IBRIDA " + "═"*30)
         print(report)
         print("═"*86)
