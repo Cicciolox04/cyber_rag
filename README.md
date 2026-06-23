@@ -45,3 +45,19 @@ Per poter visualizzare la dashboard di Gradio dal browser del tuo Host, aggiungi
 
 Gradio UI | Protocollo TCP | Porta Host: 7860 | Porta Guest: 7860
 
+**Step 2: Clonazione e Setup Ambiente**
+Avvia Kali Linux, apri il terminale e clona il repository:
+  ```bash
+  git clone https://github.com/Cicciolox04/cyber_rag.git
+  cd cyber_rag
+  
+  # Crea un ambiente virtuale
+  python3 -m venv venv
+  
+  # Insalla le dipendenze
+  pip install -r requirements.txt
+```
+**Step 3: Download Manuale delle CVE (NVD JSON Feeds)**
+
+
+
