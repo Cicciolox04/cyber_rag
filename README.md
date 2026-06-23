@@ -36,4 +36,12 @@ Ollama deve essere configurato per accettare connessioni dall'esterno (dalla VM)
   server.default_listen_address=0.0.0.0
   server.bolt.listen_address=0.0.0.0:7687
   server.http.listen_address=0.0.0.0:7474
+* Riavvia il servizio Neo4j
+
+## 🚀 Configurazione Macchina Virtuale (KALI LINUX)
+**Step 1: Configurazione Rete NAT e Port Forwarding**
+Nelle impostazioni del tuo hypervisor (es. VirtualBox, VMware), imposta la scheda di rete della VM Kali su NAT.
+Per poter visualizzare la dashboard di Gradio dal browser del tuo Host, aggiungi questa singola regola di Port Forwarding:
+
+Gradio UI: Protocollo TCP | Porta Host: 7860 | Porta Guest: 7860
 
