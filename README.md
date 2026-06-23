@@ -43,5 +43,5 @@ Ollama deve essere configurato per accettare connessioni dall'esterno (dalla VM)
 Nelle impostazioni del tuo hypervisor (es. VirtualBox, VMware), imposta la scheda di rete della VM Kali su NAT.
 Per poter visualizzare la dashboard di Gradio dal browser del tuo Host, aggiungi questa singola regola di Port Forwarding:
 
-Gradio UI: Protocollo TCP | Porta Host: 7860 | Porta Guest: 7860
+Gradio UI | Protocollo TCP | Porta Host: 7860 | Porta Guest: 7860
 
