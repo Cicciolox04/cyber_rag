@@ -58,6 +58,43 @@ Avvia Kali Linux, apri il terminale e clona il repository:
   pip install -r requirements.txt
 ```
 **Step 3: Download Manuale delle CVE (NVD JSON Feeds)**
+Il sistema necessita dei feed ufficiali delle vulnerabilità. Scaricali direttamente dal repository GitHub mirror utilizzando wget:
+```bash
+# Esegui questo comando nella cartella v0_3
+mkdir -p data/cve_data && for anno in 2017 2019 2021 2024 2025; do \
+  wget -qO- "https://github.com/fkie-cad/nvd-json-data-feeds/releases/latest/download/CVE-${anno}.json.xz" | xz -d > "data/cve_data/CVE-${anno}.json"; \
+done
+```
+**Step 4: Configurazione Credenziali**
+Affinché lo script di popolamento e l'agente RAG possano comunicare con l'Host, devi modificare all'interno degli script di ingestion, linking, embedding e nell'hybrid_rag_agent la password del database:
+```bash
+# Esempio a riga 268 del file v0_3/ingestion/1_ingestor_agent.py:
+agent = KnowledgeIngestorAgent(URI, "neo4j", "ciaociao") # <= sostituisci 'ciaociao' con la password che hai assegnato al database in Neo4j
+```
+
+
+**Step 5: Popolamento del Grafo Neo4j (Ingestion, Linking ed Embeddings)**
+Ora che i dati sono scaricati e che hai aggiornato il campo password in tutti gli script necessari, esegui gli script di popolamento per analizzare i JSON e creare i nodi (CVE, CWE, CAPEC) e le relazioni all'interno del database Neo4j:
+```bash
+cd v0_3/ingestion
+python 1_ingestor_agent.py
+python 2_linker_agent.py
+python 3_embedding_agent.py
+```
+(Nota: Questa operazione potrebbe richiedere diverso tempo a seconda delle risorse assegnate al database sull'Host).
+
+**Step 6: Avvio dell'Agente AI**
+Una volta terminato il popolamento del grafo, avvia l'interfaccia utente dell'agente:
+```bash
+cd v0_3/query
+python app.py
+```
+Apri il browser sul tuo sistema Host e naviga all'indirizzo: http://127.0.0.1:7860.
+
+
+✍️ Autore
+Sviluppato per tesi di Laurea in Informatica e Comunicazione Digitale.
+L'intelligenza artificiale al servizio della sicurezza deterministica.
 
 
 
