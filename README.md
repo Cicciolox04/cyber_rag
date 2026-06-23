@@ -92,7 +92,7 @@ python app.py
 Apri il browser sul tuo sistema Host e naviga all'indirizzo: http://127.0.0.1:7860.
 
 
-✍️ Autore
+## ✍️ Autore
 Sviluppato per tesi di Laurea in Informatica e Comunicazione Digitale.
 L'intelligenza artificiale al servizio della sicurezza deterministica.
 
