@@ -69,7 +69,7 @@ done
 Affinché lo script di popolamento e l'agente RAG possano comunicare con l'Host, devi modificare all'interno degli script di ingestion, linking, embedding e nell'hybrid_rag_agent la password del database:
 ```bash
 # Esempio a riga 268 del file v0_3/ingestion/1_ingestor_agent.py:
-agent = KnowledgeIngestorAgent(URI, "neo4j", "ciaociao") # <= sostituisci  'PASSWORD_CENSURATA'con la password che hai assegnato al database in Neo4j
+agent = KnowledgeIngestorAgent(URI, "neo4j", "PASSWORD_CENSURATA") # <= sostituisci  'PASSWORD_CENSURATA' con la password che hai assegnato al database in Neo4j
 ```
 
 

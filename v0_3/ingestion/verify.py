@@ -1,5 +1,7 @@
 import json
 from neo4j import GraphDatabase
+import os
+from dotenv import load_dotenv
 
 class GraphDiagnosticAgent:
     def __init__(self, uri, user, password):
@@ -69,10 +71,12 @@ class GraphDiagnosticAgent:
         return results
 
 if __name__ == "__main__":
+
+    load_dotenv(dotenv_path="../../.env")
     # Parametri derivati dai tuoi file di ingestion
     URI = "bolt://10.0.2.2:7687" 
     USER = "neo4j"
-    PASS = "ciaociao"
+    PASS = os.environ.get("NEO4J_PASSWORD")
 
     diag = GraphDiagnosticAgent(URI, USER, PASS)
     try:
