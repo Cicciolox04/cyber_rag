@@ -2,6 +2,7 @@ import re
 import pandas as pd
 import json
 import os
+from dotenv import load_dotenv
 import glob
 from neo4j import GraphDatabase
 
@@ -274,8 +275,13 @@ class KnowledgeIngestorAgent:
                 print(f"{record['Etichetta']:<25} | {record['Totale']}")
 
 if __name__ == "__main__":
-    URI = "bolt://10.0.2.2:7687"
-    agent = KnowledgeIngestorAgent(URI, "neo4j", "***REMOVED***")
+    # Carica le variabili dal file .env
+    load_dotenv(dotenv_path="../../.env")
+
+    # Recupera i dati dalle variabili d'ambiente
+    neo4j_url = os.environ.get("NEO4J_URL")
+    neo4j_password = os.environ.get("NEO4J_PASSWORD")
+    agent = KnowledgeIngestorAgent(neo4j_url, "neo4j", neo4j_password)
     try:
         # Step 1: Caricamento Strutture di Base
         agent.ingest_cwe('../data/cwe_list.csv')

@@ -1,10 +1,19 @@
 import gradio as gr
+import os
+from dotenv import load_dotenv
 from hybrid_rag_agent import HybridRAGAnalystAgent
 import re
 
+# Carica le variabili dal file .env
+load_dotenv(dotenv_path="../../.env")
+
+# Recupera i dati dalle variabili d'ambiente
+neo4j_url = os.environ.get("NEO4J_URL")
+neo4j_password = os.environ.get("NEO4J_PASSWORD")
+
 # Configurazione connessioni
-URI, OLLAMA_URL = "bolt://10.0.2.2:7687", "http://10.0.2.2:11434"
-analyst = HybridRAGAnalystAgent(URI, "neo4j", "***REMOVED***", OLLAMA_URL)
+OLLAMA_URL = "http://10.0.2.2:11434"
+analyst = HybridRAGAnalystAgent(neo4j_url, "neo4j", neo4j_password, OLLAMA_URL)
 
 def parse_report(report_text):
     """Scompone il report in modo dinamico e robusto, tollerando variazioni di Llama3."""

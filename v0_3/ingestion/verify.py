@@ -72,7 +72,7 @@ if __name__ == "__main__":
     # Parametri derivati dai tuoi file di ingestion
     URI = "bolt://10.0.2.2:7687" 
     USER = "neo4j"
-    PASS = "***REMOVED***"
+    PASS = "ciaociao"
 
     diag = GraphDiagnosticAgent(URI, USER, PASS)
     try:

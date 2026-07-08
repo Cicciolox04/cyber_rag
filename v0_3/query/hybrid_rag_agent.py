@@ -1,4 +1,5 @@
 import os
+from dotenv import load_dotenv
 import warnings
 import logging
 from pathlib import Path
@@ -302,7 +303,14 @@ Rispondi SOLO con il JSON.""")
         self.driver.close()
 
 if __name__ == "__main__":
-    analyst = HybridRAGAnalystAgent("bolt://10.0.2.2:7687", "neo4j", "***REMOVED***", "http://10.0.2.2:11434")
+    # Carica le variabili dal file .env
+    load_dotenv(dotenv_path="../../.env")
+
+    # Recupera i dati dalle variabili d'ambiente
+    neo4j_url = os.environ.get("NEO4J_URL")
+    neo4j_password = os.environ.get("NEO4J_PASSWORD")
+    
+    analyst = HybridRAGAnalystAgent(neo4j_url, "neo4j", neo4j_password, "http://10.0.2.2:11434")
     try:
         # Passiamo la scansione per la macchina BLUE
         report, found = analyst.analyze_content("../testing/simple_ctf.log")
