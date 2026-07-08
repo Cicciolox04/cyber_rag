@@ -66,15 +66,15 @@ mkdir -p data/cve_data && for anno in 2017 2019 2021 2024 2025; do \
 done
 ```
 **Step 4: Configurazione Credenziali**
-Affinché lo script di popolamento e l'agente RAG possano comunicare con l'Host, devi modificare all'interno degli script di ingestion, linking, embedding e nell'hybrid_rag_agent la password del database:
+Per consentire agli script di comunicare in modo sicuro con i servizi sull'Host senza esporre le credenziali nel codice, il sistema utilizza un file .env.
+Nella cartella principale del progetto (cyber_rag/), crea un file chiamato esattamente .env e compilalo con i tuoi dati:
 ```bash
-# Esempio a riga 268 del file v0_3/ingestion/1_ingestor_agent.py:
-agent = KnowledgeIngestorAgent(URI, "neo4j", "PASSWORD_CENSURATA") # <= sostituisci  'PASSWORD_CENSURATA' con la password che hai assegnato al database in Neo4j
+NEO4J_URL=bolt://10.0.2.2:7687
+NEO4J_PASSWORD=la_tua_password_neo4j
 ```
 
-
 **Step 5: Popolamento del Grafo Neo4j (Ingestion, Linking ed Embeddings)**
-Ora che i dati sono scaricati e che hai aggiornato il campo password in tutti gli script necessari, esegui gli script di popolamento per analizzare i JSON e creare i nodi (CVE, CWE, CAPEC) e le relazioni all'interno del database Neo4j:
+Ora che i dati sono scaricati e che hai aggiornato il file .env, esegui gli script di popolamento per analizzare i JSON e creare i nodi (CVE, CWE, CAPEC) e le relazioni all'interno del database Neo4j:
 ```bash
 cd v0_3/ingestion
 python 1_ingestor_agent.py
